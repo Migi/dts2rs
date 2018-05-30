@@ -21,8 +21,25 @@ function syntaxKindToName(kind: ts.SyntaxKind) {
     return (<any>ts).SyntaxKind[kind];
 }
 
+type Item = Variable | Class;
+
+class Variable {
+	constructor(public name: string) {}
+}
+
+class Class {
+	constructor(public name: string) {}
+}
+
 class Namespace {
-	constructor(public parent: Namespace | undefined, public name: string) {}
+	constructor(public parent: Namespace | undefined, public name: string) {
+		this.exportedItems = [];
+		this.nameToClass = {};
+	}
+
+	public exportedItems: Item[];
+
+	public nameToClass: {[name: string]: Class};
 }
 
 function generateDocumentation(fileNames: string[], options: ts.CompilerOptions): void {
