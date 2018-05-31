@@ -28,18 +28,64 @@ class Variable {
 }
 
 class Class {
-	constructor(public name: string) {}
+	constructor(public symbol: ts.Symbol) {
+		this.name = symbol.getName();
+	}
+	name: string;
+}
+
+class FunctionOverload {
+	constructor() {}
+}
+
+class Function {
+	constructor(public name: string) {
+		this.overloads = [];
+	}
+
+	overloads: FunctionOverload[];
 }
 
 class Namespace {
 	constructor(public parent: Namespace | undefined, public name: string) {
+		if (this.name === "" && this.parent !== undefined) {
+			console.error("Namespace without name found that isn't the root namespace!");
+			throw "terminating...";
+		}
 		this.exportedItems = [];
-		this.nameToClass = {};
+		this.nameToItem = {};
 	}
 
 	public exportedItems: Item[];
 
-	public nameToClass: {[name: string]: Class};
+	public nameToItem: {[name: string]: Item};
+
+	toStringFull() : string {
+		if (this.name == "") {
+			return "the root namespace";
+		} else if (this.parent === undefined) {
+			return "namespace "+this.name;
+		} else {
+			return this.parent.toStringFull() + "::" + this.name;
+		}
+	}
+
+	addNonOverridableItem(item: Item, itemType: string) {
+		let name = item.name;
+		if (this.nameToItem.hasOwnProperty(name)) {
+			console.error("WARNING: Encountered "+itemType+" with name \""+name+"\" in namespace "+this.toString()+", which already has an item with that name. Ignoring...");
+			return;
+		}
+		this.exportedItems.push(item);
+		this.nameToItem[name] = item;
+	}
+
+	addClass(c: Class) {
+		this.addNonOverridableItem(c, "class");
+	}
+
+	addFunction() {
+	}
 }
 
 function generateDocumentation(fileNames: string[], options: ts.CompilerOptions): void {
@@ -84,6 +130,15 @@ function generateDocumentation(fileNames: string[], options: ts.CompilerOptions)
 			//console.log("visiting class "+node.name.getText());
 			// This is a top level class, get its symbol
 			let symbol = checker.getSymbolAtLocation(node.name);
+			if (symbol !== undefined && symbol.valueDeclaration !== undefined) {
+				let name = symbol.getName();
+				let docs = symbol.getDocumentationComment(checker);
+				let type = checker.getTypeOfSymbolAtLocation(symbol, symbol.valueDeclaration);
+				let constructors = type.getConstructSignatures();
+				console.log(constructors);
+				//console.log(type);
+				//console.log("Symbol "++", docs: "++", type "+checker.typeToString();
+			}
 			// No need to walk any further, class expressions/inner declarations
 			// cannot be exported
 		}
