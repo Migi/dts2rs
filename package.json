@@ -13,21 +13,19 @@
     "tsc": "tsc"
   },
   "keywords": [
-    "TypeScript",
-    "definition",
-    "files",
+    "TypeScript definition files",
     "d.ts",
     "Rust",
-    "rs",
     "stdweb"
   ],
   "author": "Michiel De Muynck <michieldemuynck@gmail.com>",
   "license": "MIT",
   "dependencies": {
-    "@types/node": "^10.1.4",
+    "mkdirp": "^0.5.1",
     "typescript": "^2.8.3"
   },
   "devDependencies": {
+    "@types/mkdirp": "^0.5.2",
     "@types/node": "^10.1.4",
     "typescript": "^2.8.3"
   },
