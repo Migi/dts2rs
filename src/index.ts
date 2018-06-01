@@ -3,6 +3,11 @@ import * as fs from "fs";
 import * as path from "path";
 import * as mkdirp from "mkdirp";
 
+interface Context {
+	sourceFiles: string[],
+	checker: ts.TypeChecker
+}
+
 let diagnosticsHost : ts.FormatDiagnosticsHost = {
 	getCurrentDirectory: () => ts.sys.getCurrentDirectory(),
 	getNewLine: () => ts.sys.newLine,
@@ -61,14 +66,97 @@ class Interface extends BaseItem {
 	}
 }
 
+class TypeAlias extends BaseItem {
+	constructor(symbol: ts.Symbol, nameNode: ts.Node) {
+		super(symbol, nameNode);
+	}
+}
+
 const BASE_TRAIT_NAME = "__WrapsJsRef";
 
+const rustKeywords = {
+	"_": true,
+	"as": true,
+	"box": true,
+	"break": true,
+	"const": true,
+	"continue": true,
+	"crate": true,
+	"else": true,
+	"enum": true,
+	"extern": true,
+	"false": true,
+	"fn": true,
+	"for": true,
+	"if": true,
+	"impl": true,
+	"in": true,
+	"let": true,
+	"loop": true,
+	"match": true,
+	"mod": true,
+	"move": true,
+	"mut": true,
+	"pub": true,
+	"ref": true,
+	"return": true,
+	"self": true,
+	"Self": true,
+	"static": true,
+	"struct": true,
+	"super": true,
+	"trait": true,
+	"true": true,
+	"type": true,
+	"unsafe": true,
+	"use": true,
+	"where": true,
+	"while": true,
+	"abstract": true,
+	"alignof": true,
+	"become": true,
+	"do": true,
+	"final": true,
+	"macro": true,
+	"offsetof": true,
+	"override": true,
+	"priv": true,
+	"pure": true,
+	"sizeof": true,
+	"typeof": true,
+	"unsized": true,
+	"virtual": true,
+	"yield": true,
+	"async": true,
+	"auto": true,
+	"catch": true,
+	"default": true,
+	"dyn": true,
+	"union": true
+};
+
+function escapeRustName(name:string) : string {
+	if (rustKeywords.hasOwnProperty(name)) {
+		name = name+"__";
+	}
+	let newName = "";
+	for (let i = 0; i < name.length; i++) {
+		let c = name.charCodeAt(i);
+		if ((c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57 && i > 0) || c == 95) {
+			newName += String.fromCharCode(c);
+		} else {
+			newName += "_Ux"+c.toString(16);
+		}
+	}
+	return newName;
+}
+
 function getSubClassOfTraitName(className:string) : string {
-	return "__SubClassOf_"+className;
+	return escapeRustName("__SubClassOf_"+className);
 }
 
 function rustifyFullyQualifiedName(fullyQualifiedName: string) : string {
-	return fullyQualifiedName.replace(/\./g, "::");
+	return fullyQualifiedName.split('.').map(escapeRustName).join("::");
 }
 
 function rustifyAndMapToTraitFullyQualifiedName(fullyQualifiedName: string) : string {
@@ -78,11 +166,53 @@ function rustifyAndMapToTraitFullyQualifiedName(fullyQualifiedName: string) : st
 		throw "exiting...";
 	}
 	arr[arr.length-1] = getSubClassOfTraitName(arr[arr.length-1]);
-	return arr.join("::");
+	return arr.map(escapeRustName).join("::");
 }
 
-function rustifyType(t:ts.Type) : string | undefined {
+let typeToStdwebTypeMap : {[key:string]: string} = {};
+{
+	function add(key:string, val:string) {
+		typeToStdwebTypeMap[key] = "::stdweb::web::"+val;
+	}
+
+	add("HTMLCanvasElement", "html_element::CanvasElement");
+	// TODO: add the rest
+}
+
+function rustifyType(t:ts.Type, shouldBoxTrait:boolean, context:Context) : string | undefined {
 	let f = t.flags;
+	let symbol = undefined;
+	if (t.aliasSymbol !== undefined) {
+		symbol = t.aliasSymbol;
+	} else if (t.symbol !== undefined) {
+		symbol = t.symbol;
+	}
+	if (symbol !== undefined) {
+		let decls = symbol.getDeclarations();
+		if (decls !== undefined) {
+			for (const decl of decls) {
+				let fileName = decl.getSourceFile().fileName;
+				if (context.sourceFiles.indexOf(fileName) >= 0) {
+					let qualifiedName = context.checker.getFullyQualifiedName(symbol);
+					if (qualifiedName !== undefined && qualifiedName !== "__type") {
+						let rustName = rustifyFullyQualifiedName(qualifiedName);
+						if (shouldBoxTrait) {
+							return "Box<"+rustName+">";
+						} else {
+							return "impl ::std::borrow::Borrow<"+rustName+">";
+						}
+					}
+				} else {
+					let qualifiedName = context.checker.getFullyQualifiedName(symbol);
+					if (qualifiedName == symbol.name) {
+						if (typeToStdwebTypeMap.hasOwnProperty(qualifiedName)) {
+							return typeToStdwebTypeMap[qualifiedName];
+						}
+					}
+				}
+			}
+		}
+	}
 	if (f & ts.TypeFlags.Any) {
 		return "::stdweb::Value";
 	} else if (f & ts.TypeFlags.String) {
@@ -136,10 +266,10 @@ function rustifyType(t:ts.Type) : string | undefined {
 	}
 }
 
-function emitCargoToml() : string {
-	return ""+
+function emitCargoToml(packageName: string) : string {
+	return "" +
 	"[package]\n" +
-	"name = \"todomvc\"\n" +
+	"name = \""+packageName+"\"\n" +
 	"version = \"1.0.0\"\n" +
 	"authors = [\"dts2rs\"]\n" +
 	"\n" + 
@@ -147,12 +277,32 @@ function emitCargoToml() : string {
 	"stdweb = \"0.4\"\n";
 }
 
-function emitNamespace(ns:Namespace, checker: ts.TypeChecker, writeln: (s:string) => void) {
+function numToAbc(num:number) : string {
+	let neg = false;
+	if (num < 0) {
+		neg = true;
+		num = -num;
+	}
+	let result = "";
+	while (num > 0) {
+		let digit = (num%26);
+		num = Math.floor(num/26);
+		result = String.fromCharCode(97+digit) + result;
+	}
+	if (neg) {
+		result = "N"+result;
+	}
+	return result;
+}
+
+function emitNamespace(ns:Namespace, writeln: (s:string) => void, context:Context) {
+	let checker = context.checker;
 	for (const item of ns.exportedItems) {
 		if (item instanceof Class) {
 			let symbol = item.symbol;
 			//console.log("class full name: "+checker.getFullyQualifiedName(symbol));
 			let name = symbol.getName();
+			let rustEscapedName = escapeRustName(name);
 			let docs = symbol.getDocumentationComment(checker);
 			let heritageClauses = item.classDecl.heritageClauses;
 			let type = checker.getTypeOfSymbolAtLocation(symbol, item.nameNode);
@@ -160,10 +310,7 @@ function emitNamespace(ns:Namespace, checker: ts.TypeChecker, writeln: (s:string
 			for (const docLine of docs) {
 				writeln("/// "+docLine);
 			}
-			writeln("#[derive(Clone,Debug)]");
-			writeln("pub struct "+name+"(::stdweb::Reference);");
-			writeln("");
-			writeln("pub trait "+getSubClassOfTraitName(name)+":");
+			writeln("pub trait "+rustEscapedName+":");
 			writeln("\t"+BASE_TRAIT_NAME+" +");
 
 			if (heritageClauses !== undefined) {
@@ -172,7 +319,7 @@ function emitNamespace(ns:Namespace, checker: ts.TypeChecker, writeln: (s:string
 						let baseType = checker.getTypeFromTypeNode(baseTypeExpr);
 						if (baseType.symbol !== undefined) {
 							if (clause.token == ts.SyntaxKind.ExtendsKeyword) {
-								writeln("\t"+rustifyAndMapToTraitFullyQualifiedName(checker.getFullyQualifiedName(baseType.symbol))+" +");
+								writeln("\t"+rustifyFullyQualifiedName(checker.getFullyQualifiedName(baseType.symbol))+" +");
 							} else {
 								writeln("\t"+rustifyFullyQualifiedName(checker.getFullyQualifiedName(baseType.symbol))+" +");
 							}
@@ -180,10 +327,82 @@ function emitNamespace(ns:Namespace, checker: ts.TypeChecker, writeln: (s:string
 					});
 				});
 			}
-			writeln("{");
-			let constructors = type.getConstructSignatures();
+			writeln("{}");
+			writeln("");
+			writeln("impl "+rustEscapedName+" for ::stdweb::Value {");
 			writeln("}");
 			writeln("");
+
+			//console.log("Symbol "+symbol.getName()+", docs: "+ts.displayPartsToString(symbol.getDocumentationComment(checker))+", type "+checker.typeToString(checker.getTypeOfSymbolAtLocation(symbol, symbol.valueDeclaration!)));
+			/*function serializeSignature(signature: ts.Signature) {
+				return {
+					parameters: signature.parameters.map(serializeSymbol),
+					returnType: checker.typeToString(signature.getReturnType()),
+					documentation: ts.displayPartsToString(signature.getDocumentationComment(checker))
+				};
+			}*/
+
+			let constructors = type.getConstructSignatures();
+			let numConstructorsWithNArgs : {[key:number]: number} = {};
+			let numConstructorsWithNArgsEmitted : {[key:number]: number} = {};
+			constructors.forEach((constructor) => {
+				let n = constructor.parameters.length;
+				if (numConstructorsWithNArgs.hasOwnProperty(n)) {
+					numConstructorsWithNArgs[n] += 1;
+				} else {
+					numConstructorsWithNArgs[n] = 1;
+				}
+			});
+			constructors.forEach((constructor) => {
+				{
+					let nArgs = constructor.parameters.length;
+					let newFnName = "";
+					if (numConstructorsWithNArgs[nArgs] > 1) {
+						if (numConstructorsWithNArgsEmitted.hasOwnProperty(nArgs)) {
+							numConstructorsWithNArgsEmitted[nArgs] += 1;
+						} else {
+							numConstructorsWithNArgsEmitted[nArgs] = 1;
+						}
+						newFnName = "__new_"+rustEscapedName + nArgs.toString() + numToAbc(numConstructorsWithNArgsEmitted[nArgs]);
+					} else if (constructors.length > 1) {
+						newFnName = "__new_"+rustEscapedName + nArgs.toString();
+					} else {
+						newFnName = "__new_"+rustEscapedName;
+					}
+					let line = "pub fn "+newFnName+"(";
+
+					let firstParam = true;
+					constructor.parameters.forEach((constructorParam) => {
+						if (!firstParam) {
+							line += ", ";
+						}
+						firstParam = false;
+						//line += escapeRustName(constructorParam.name) + ": " + rustifyType(checker.getDeclaredTypeOfSymbol(constructorParam), context) + ", ";
+						line += escapeRustName(constructorParam.name) + ": " + rustifyType(checker.getTypeOfSymbolAtLocation(constructorParam, constructorParam.valueDeclaration!), false, context);
+					});
+
+					line += ") -> impl "+rustEscapedName+" {";
+
+					writeln(line);
+				}
+				{
+					let line = "\tjs!(new "+checker.getFullyQualifiedName(symbol) + "(";
+					let firstParam = true;
+					constructor.parameters.forEach((constructorParam) => {
+						if (!firstParam) {
+							line += ", ";
+						}
+						firstParam = false;
+						line += "@{"+escapeRustName(constructorParam.name)+"}";
+					});
+					line += "))";
+					writeln(line);
+				}
+				writeln("}");
+			});
+			if (constructors.length > 0) {
+				writeln("");
+			}
 
 			if (symbol.members !== undefined) {
 				symbol.members.forEach((memSym) => {
@@ -215,14 +434,27 @@ function emitNamespace(ns:Namespace, checker: ts.TypeChecker, writeln: (s:string
 				});
 			}
 		} else if (item instanceof Interface) {
-			writeln("pub trait "+item.name+" {");
+			let escapedName = escapeRustName(item.name);
+			writeln("pub trait "+escapedName+": "+BASE_TRAIT_NAME+" {");
+			writeln("}");
+			writeln("");
+			writeln("impl "+escapedName+" for ::stdweb::Value {");
+			writeln("}");
+			writeln("");
+		} else if (item instanceof TypeAlias) {
+			let escapedName = escapeRustName(item.name);
+			writeln("pub trait "+escapedName+": "+BASE_TRAIT_NAME+" {");
+			writeln("}");
+			writeln("");
+			writeln("impl "+escapedName+" for ::stdweb::Value {");
 			writeln("}");
 			writeln("");
 		} else if (item instanceof Namespace) {
-			writeln("pub mod "+item.name+" {");
+			let escapedName = escapeRustName(item.name);
+			writeln("pub mod "+escapedName+" {");
 			writeln("\tuse super::*;");
 			writeln("");
-			emitNamespace(item, checker, (s) => writeln("\t"+s));
+			emitNamespace(item, (s) => writeln("\t"+s), context);
 			writeln("}");
 		}
 	}
@@ -273,6 +505,11 @@ function generateDocumentation(fileNames: string[], options: ts.CompilerOptions,
 	
 	mkdirp.sync(path.join(outDir, "src"));
 
+	let context = {
+		sourceFiles: fileNames,
+		checker: checker
+	};
+
     // Visit every sourceFile in the program
     for (const sourceFile of program.getSourceFiles()) {
 		if (fileNames.indexOf(sourceFile.fileName) < 0) {
@@ -286,16 +523,27 @@ function generateDocumentation(fileNames: string[], options: ts.CompilerOptions,
 		outStr += "#[macro_use]\n";
 		outStr += "extern crate stdweb;\n";
 		outStr += "\n";
-		outStr += "pub trait "+BASE_TRAIT_NAME+" {\n";
-		outStr += "\tfn __get_jsref() -> ::stdweb::Reference;\n";
+		outStr += "pub trait "+BASE_TRAIT_NAME+" : ::stdweb::private::JsSerialize + ::stdweb::private::JsSerializeOwned {\n";
+		outStr += "\tfn __get_jsref(&self) -> ::stdweb::Reference;\n";
 		outStr += "}\n";
+		outStr += "\n";
+		outStr += "impl "+BASE_TRAIT_NAME+" for ::stdweb::Value {\n";
+		outStr += "\tfn __get_jsref(&self) -> ::stdweb::Reference {\n";
+		outStr += "\t\tif let ::stdweb::Value::Reference(r) = self {\n";
+		outStr += "\t\t\tr.clone()\n";
+		outStr += "\t\t} else {\n";
+		outStr += "\t\t\tpanic!(\"__get_jsref() called on non-reference!\")\n";
+		outStr += "\t\t}\n";
+		outStr += "\t}\n";
+		outStr += "}\n";
+		outStr += "\n";
 		outStr += "\n";
 		outStr += "#[derive(Clone,Debug)]\n";
 		outStr += "pub struct Any(::stdweb::Value);\n";
 		outStr += "\n";
-		emitNamespace(rootNamespace, checker, (s) => { outStr += s+"\n" });
+		emitNamespace(rootNamespace, (s) => { outStr += s+"\n" }, context);
 		
-		fs.writeFile(path.join(outDir, "Cargo.toml"), emitCargoToml(), undefined, (err) => {
+		fs.writeFile(path.join(outDir, "Cargo.toml"), emitCargoToml("dts2rs-generated-code"), undefined, (err) => {
 			if (err) {
 				console.error("Error writing Cargo.toml: "+err.message);
 			}
@@ -366,9 +614,6 @@ function generateDocumentation(fileNames: string[], options: ts.CompilerOptions,
 			// No need to walk any further, class expressions/inner declarations
 			// cannot be exported
 		}
-		else if (ts.isTypeAliasDeclaration(node) && node.name) {
-			//console.log("visiting type alias "+node.name.getText());
-		}
 		else if (ts.isFunctionDeclaration(node) && node.name) {
 			let symbol = checker.getSymbolAtLocation(node.name);
 			if (symbol !== undefined) {
@@ -380,6 +625,13 @@ function generateDocumentation(fileNames: string[], options: ts.CompilerOptions,
 			let symbol = checker.getSymbolAtLocation(node.name);
 			if (symbol !== undefined) {
 				let item = new Interface(symbol, node.name);
+				namespace.addItem(item);
+			}
+		}
+		else if (ts.isTypeAliasDeclaration(node) && node.name) {
+			let symbol = checker.getSymbolAtLocation(node.name);
+			if (symbol !== undefined) {
+				let item = new TypeAlias(symbol, node.name);
 				namespace.addItem(item);
 			}
 		}
