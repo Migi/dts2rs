@@ -2,6 +2,7 @@ import * as ts from "typescript";
 import * as fs from "fs";
 import * as path from "path";
 import * as mkdirp from "mkdirp";
+import { escape } from "querystring";
 
 interface Context {
 	sourceFiles: string[],
@@ -42,33 +43,96 @@ function nameMapPush(nameMap:NameMap, item:Item) {
 }
 
 class BaseItem {
-	constructor(public symbol: ts.Symbol, public nameNode: ts.Node) {
+	constructor(public symbol: ts.Symbol, public nameNode: ts.Node, context: Context) {
 		this.name = symbol.getName();
+		this.rustName = escapeRustName(this.name);
+		this.fullyQualifiedName = context.checker.getFullyQualifiedName(symbol);
+		this.rustFullyQualifiedName = rustifyFullyQualifiedName(this.fullyQualifiedName);
 	}
 	name: string;
+	rustName: string;
+	fullyQualifiedName: string;
+	rustFullyQualifiedName: string;
 }
 
 class Class extends BaseItem {
-	constructor(public classDecl: ts.ClassDeclaration, symbol: ts.Symbol, nameNode: ts.Node) {
-		super(symbol, nameNode);
+	constructor(public classDecl: ts.ClassDeclaration, symbol: ts.Symbol, nameNode: ts.Node, context: Context) {
+		super(symbol, nameNode, context);
+
+		let checker = context.checker;
+
+		this.type = checker.getTypeOfSymbolAtLocation(symbol, nameNode);
+
+		this.superClass = undefined;
+		this.directImpls = [];
+
+		let heritageClauses = this.classDecl.heritageClauses;
+		if (heritageClauses !== undefined) {
+			heritageClauses.forEach((clause) => {
+				clause.types.forEach((baseTypeExpr) => {
+					let baseType = checker.getTypeFromTypeNode(baseTypeExpr);
+					if (baseType.isClass()) {
+						
+					}
+					if (baseType.symbol !== undefined) {
+						let baseTypeDecls = baseType.symbol.declarations;
+						if (baseTypeDecls !== undefined) {
+							baseTypeDecls[0].
+							if (clause.token == ts.SyntaxKind.ExtendsKeyword) {
+								this.superClass = 
+							} else {
+								writeln("\t"+rustifyFullyQualifiedName(checker.getFullyQualifiedName(baseType.symbol))+" +");
+							}
+						}
+					}
+				});
+			});
+		}
+
+		this.allSuperClasses = {};
+		if (superClass !== undefined) {
+			Object.assign(this.allSuperClasses, superClass.allSuperClasses);
+			this.allSuperClasses[superClass.fullyQualifiedName] = superClass;
+		}
+		this.allImpls = {};
+		for (let impl of thisImplements) {
+			Object.assign(this.allImpls, impl.allSuperIterfaces);
+		}
+		for (let impl of thisImplements) {
+			this.allImpls[impl.fullyQualifiedName] = impl;
+		}
 	}
+
+	type: ts.Type;
+	superClass: Class | undefined;
+	directImpls: Interface[];
+	allSuperClasses: {[fullyQualifiedName: string]: Class};
+	allImpls: {[fullyQualifiedName: string]: Interface};
 }
 
 class Function extends BaseItem {
-	constructor(symbol: ts.Symbol, nameNode: ts.Node) {
-		super(symbol, nameNode);
+	constructor(symbol: ts.Symbol, nameNode: ts.Node, context: Context) {
+		super(symbol, nameNode, context);
 	}
 }
 
 class Interface extends BaseItem {
-	constructor(symbol: ts.Symbol, nameNode: ts.Node) {
-		super(symbol, nameNode);
+	constructor(symbol: ts.Symbol, nameNode: ts.Node, public directSuperInterfaces: Interface[], context: Context) {
+		super(symbol, nameNode, context);
+		this.allSuperIterfaces = {};
+		for (let impl of directSuperInterfaces) {
+			Object.assign(this.allSuperIterfaces, impl.allSuperIterfaces);
+		}
+		for (let impl of directSuperInterfaces) {
+			this.allSuperIterfaces[impl.fullyQualifiedName] = impl;
+		}
 	}
+	allSuperIterfaces: {[fullyQualifiedName: string]: Interface};
 }
 
 class TypeAlias extends BaseItem {
-	constructor(symbol: ts.Symbol, nameNode: ts.Node) {
-		super(symbol, nameNode);
+	constructor(symbol: ts.Symbol, nameNode: ts.Node, context: Context) {
+		super(symbol, nameNode, context);
 	}
 }
 
@@ -199,7 +263,7 @@ function rustifyType(t:ts.Type, shouldBoxTrait:boolean, context:Context) : strin
 						if (shouldBoxTrait) {
 							return "Box<"+rustName+">";
 						} else {
-							return "impl ::std::borrow::Borrow<"+rustName+">";
+							return "impl "+rustName;
 						}
 					}
 				} else {
@@ -330,6 +394,9 @@ function emitNamespace(ns:Namespace, writeln: (s:string) => void, context:Contex
 			writeln("{}");
 			writeln("");
 			writeln("impl "+rustEscapedName+" for ::stdweb::Value {");
+			writeln("}");
+			writeln("");
+			writeln("impl "+rustEscapedName+" for Box<"+rustEscapedName+"> {");
 			writeln("}");
 			writeln("");
 
@@ -574,7 +641,7 @@ function generateDocumentation(fileNames: string[], options: ts.CompilerOptions,
         if (ts.isClassDeclaration(node) && node.name) {
 			let symbol = checker.getSymbolAtLocation(node.name);
 			if (symbol !== undefined) {
-				let c = new Class(node, symbol, node.name);
+				let c = new Class(node, symbol, node.name, context);
 				namespace.addItem(c);
 				let name = symbol.getName();
 				let docs = symbol.getDocumentationComment(checker);
