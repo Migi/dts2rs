@@ -72,17 +72,16 @@ class Class extends BaseItem {
 				clause.types.forEach((baseTypeExpr) => {
 					let baseType = checker.getTypeFromTypeNode(baseTypeExpr);
 					if (baseType.isClass()) {
-						
+						//baseType.
 					}
 					if (baseType.symbol !== undefined) {
 						let baseTypeDecls = baseType.symbol.declarations;
 						if (baseTypeDecls !== undefined) {
-							baseTypeDecls[0].
-							if (clause.token == ts.SyntaxKind.ExtendsKeyword) {
+							/*if (clause.token == ts.SyntaxKind.ExtendsKeyword) {
 								this.superClass = 
 							} else {
 								writeln("\t"+rustifyFullyQualifiedName(checker.getFullyQualifiedName(baseType.symbol))+" +");
-							}
+							}*/
 						}
 					}
 				});
@@ -90,17 +89,17 @@ class Class extends BaseItem {
 		}
 
 		this.allSuperClasses = {};
-		if (superClass !== undefined) {
+		/*if (superClass !== undefined) {
 			Object.assign(this.allSuperClasses, superClass.allSuperClasses);
 			this.allSuperClasses[superClass.fullyQualifiedName] = superClass;
-		}
+		}*/
 		this.allImpls = {};
-		for (let impl of thisImplements) {
+		/*for (let impl of thisImplements) {
 			Object.assign(this.allImpls, impl.allSuperIterfaces);
 		}
 		for (let impl of thisImplements) {
 			this.allImpls[impl.fullyQualifiedName] = impl;
-		}
+		}*/
 	}
 
 	type: ts.Type;
@@ -561,10 +560,56 @@ class Namespace {
 
 function generateDocumentation(fileNames: string[], options: ts.CompilerOptions, outDir:string): void {
     // Build a program using the set of root file names in fileNames
-    let program = ts.createProgram(fileNames, options);
+	let program = ts.createProgram(fileNames, options);
 
     // Get the checker, we will use it to find more about classes
 	let checker = program.getTypeChecker();
+
+	let modules = checker.getAmbientModules();
+
+	modules.forEach((m) => {
+		console.log(m.name);
+		let decls = m.getDeclarations();
+		let shouldExport = false;
+		if (decls !== undefined) {
+			console.log(" - " + decls.map((mDecl) => {
+				let fileName = mDecl.getSourceFile().fileName;
+				if (fileNames.indexOf(fileName) >= 0) {
+					shouldExport = true;
+				}
+			}));
+			if (shouldExport) {
+				let exps = checker.getExportsOfModule(m);
+				if (exps !== undefined) {
+					exps.forEach((e) => {
+						console.log(" - exports: "+e.name+": "+checker.getFullyQualifiedName(e));
+						let type = checker.getDeclaredTypeOfSymbol(e);
+						console.log(" - - type: "+checker.typeToString(type));
+						if (type.isClassOrInterface()) {
+							let bases = checker.getBaseTypes(type);
+							bases.forEach((base) => {
+								console.log(" - - - base: "+checker.typeToString(base));
+								if (base.symbol !== undefined) {
+									console.log(" - - - fqn: "+checker.getFullyQualifiedName(base.symbol));
+								}
+							});
+						}
+						/*let members = checker.getRootSymbols(e);
+						if (members !== undefined) {
+							checker.getBaseTypes
+							members.forEach((mem) => {
+								console.log(" - - member: "+mem.name+": "+checker.getFullyQualifiedName(mem));
+							});
+						}*/
+					});
+				} else {
+					console.log("it's undefined");
+				}
+			}
+		}
+	})
+
+	return;
 	
 	console.log("checking...");
 
@@ -684,21 +729,21 @@ function generateDocumentation(fileNames: string[], options: ts.CompilerOptions,
 		else if (ts.isFunctionDeclaration(node) && node.name) {
 			let symbol = checker.getSymbolAtLocation(node.name);
 			if (symbol !== undefined) {
-				let item = new Function(symbol, node.name);
+				let item = new Function(symbol, node.name, context);
 				namespace.addItem(item);
 			}
 		}
 		else if (ts.isInterfaceDeclaration(node)) {
 			let symbol = checker.getSymbolAtLocation(node.name);
 			if (symbol !== undefined) {
-				let item = new Interface(symbol, node.name);
+				let item = new Interface(symbol, node.name, [], context);
 				namespace.addItem(item);
 			}
 		}
 		else if (ts.isTypeAliasDeclaration(node) && node.name) {
 			let symbol = checker.getSymbolAtLocation(node.name);
 			if (symbol !== undefined) {
-				let item = new TypeAlias(symbol, node.name);
+				let item = new TypeAlias(symbol, node.name, context);
 				namespace.addItem(item);
 			}
 		}
