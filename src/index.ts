@@ -2,11 +2,12 @@ import * as ts from "typescript";
 import * as fs from "fs";
 import * as path from "path";
 import * as mkdirp from "mkdirp";
-import { escape } from "querystring";
+import { escape, parse } from "querystring";
 
 interface Context {
 	sourceFiles: string[],
-	checker: ts.TypeChecker
+	checker: ts.TypeChecker,
+	rootNameSpace: Namespace,
 }
 
 let diagnosticsHost : ts.FormatDiagnosticsHost = {
@@ -30,109 +31,26 @@ function syntaxKindToName(kind: ts.SyntaxKind) {
     return (<any>ts).SyntaxKind[kind];
 }
 
-type Item = Class | Interface | Function | Namespace;
-type NameMap = {[name: string]: Item[]};
-
-function nameMapPush(nameMap:NameMap, item:Item) {
-	let name = item.name;
-	if (nameMap.hasOwnProperty(name)) {
-		nameMap[name].push(item);
-	} else {
-		nameMap[name] = [item];
-	}
-}
-
-class BaseItem {
-	constructor(public symbol: ts.Symbol, public nameNode: ts.Node, context: Context) {
-		this.name = symbol.getName();
-		this.rustName = escapeRustName(this.name);
-		this.fullyQualifiedName = context.checker.getFullyQualifiedName(symbol);
-		this.rustFullyQualifiedName = rustifyFullyQualifiedName(this.fullyQualifiedName);
-	}
-	name: string;
-	rustName: string;
-	fullyQualifiedName: string;
-	rustFullyQualifiedName: string;
-}
-
-class Class extends BaseItem {
-	constructor(public classDecl: ts.ClassDeclaration, symbol: ts.Symbol, nameNode: ts.Node, context: Context) {
-		super(symbol, nameNode, context);
-
+class Class {
+	constructor(public symbol: ts.Symbol, public type: ts.InterfaceType, public namespace: Namespace, public context: Context) {
 		let checker = context.checker;
-
-		this.type = checker.getTypeOfSymbolAtLocation(symbol, nameNode);
 
 		this.superClass = undefined;
 		this.directImpls = [];
-
-		let heritageClauses = this.classDecl.heritageClauses;
-		if (heritageClauses !== undefined) {
-			heritageClauses.forEach((clause) => {
-				clause.types.forEach((baseTypeExpr) => {
-					let baseType = checker.getTypeFromTypeNode(baseTypeExpr);
-					if (baseType.isClass()) {
-						//baseType.
-					}
-					if (baseType.symbol !== undefined) {
-						let baseTypeDecls = baseType.symbol.declarations;
-						if (baseTypeDecls !== undefined) {
-							/*if (clause.token == ts.SyntaxKind.ExtendsKeyword) {
-								this.superClass = 
-							} else {
-								writeln("\t"+rustifyFullyQualifiedName(checker.getFullyQualifiedName(baseType.symbol))+" +");
-							}*/
-						}
-					}
-				});
-			});
-		}
-
-		this.allSuperClasses = {};
-		/*if (superClass !== undefined) {
-			Object.assign(this.allSuperClasses, superClass.allSuperClasses);
-			this.allSuperClasses[superClass.fullyQualifiedName] = superClass;
-		}*/
-		this.allImpls = {};
-		/*for (let impl of thisImplements) {
-			Object.assign(this.allImpls, impl.allSuperIterfaces);
-		}
-		for (let impl of thisImplements) {
-			this.allImpls[impl.fullyQualifiedName] = impl;
-		}*/
 	}
 
-	type: ts.Type;
 	superClass: Class | undefined;
 	directImpls: Interface[];
-	allSuperClasses: {[fullyQualifiedName: string]: Class};
-	allImpls: {[fullyQualifiedName: string]: Interface};
 }
 
-class Function extends BaseItem {
-	constructor(symbol: ts.Symbol, nameNode: ts.Node, context: Context) {
-		super(symbol, nameNode, context);
-	}
-}
+class Interface {
+	constructor(public symbol: ts.Symbol, public type: ts.InterfaceType, public namespace: Namespace, public context: Context) {
+		let checker = context.checker;
 
-class Interface extends BaseItem {
-	constructor(symbol: ts.Symbol, nameNode: ts.Node, public directSuperInterfaces: Interface[], context: Context) {
-		super(symbol, nameNode, context);
-		this.allSuperIterfaces = {};
-		for (let impl of directSuperInterfaces) {
-			Object.assign(this.allSuperIterfaces, impl.allSuperIterfaces);
-		}
-		for (let impl of directSuperInterfaces) {
-			this.allSuperIterfaces[impl.fullyQualifiedName] = impl;
-		}
+		this.directImpls = [];
 	}
-	allSuperIterfaces: {[fullyQualifiedName: string]: Interface};
-}
 
-class TypeAlias extends BaseItem {
-	constructor(symbol: ts.Symbol, nameNode: ts.Node, context: Context) {
-		super(symbol, nameNode, context);
-	}
+	directImpls: Interface[];
 }
 
 const BASE_TRAIT_NAME = "__WrapsJsRef";
@@ -533,12 +451,16 @@ class Namespace {
 			console.error("Parent: "+this.parent.toStringFull());
 			throw "terminating...";
 		}
-		this.exportedItems = [];
-		this.nameMap = {};
+		this.subNamespaces = {};
+		this.classes = {};
+		this.interfaces = {};
+		this.functions = {};
 	}
 
-	exportedItems: Item[];
-	nameMap: NameMap;
+	subNamespaces: {[name:string]: Namespace};
+	classes: {[name:string]: Class};
+	interfaces: {[name:string]: Interface};
+	functions: {[name:string]: Function};
 
 	toStringFull() : string {
 		if (this.name == "") {
@@ -550,12 +472,92 @@ class Namespace {
 		}
 	}
 
-	addItem(item: Item) {
-		if (!this.nameMap.hasOwnProperty(item.name)) {
-			this.exportedItems.push(item);
-			this.nameMap[item.name] = [item];
+	private getOrCreateItemOfType<T>(name: string, nameMap: {[name:string]: T}, creator: () => T) : T {
+		if (nameMap.hasOwnProperty(name)) {
+			return nameMap[name];
+		} else {
+			let newItem = creator();
+			nameMap[name] = newItem;
+			return newItem;
 		}
 	}
+
+	getOrCreateSubNamespace(name: string) : Namespace {
+		return this.getOrCreateItemOfType(name, this.subNamespaces, () => new Namespace(this, name));
+	}
+
+	getOrCreateClass(name: string) : Class {
+		return this.getOrCreateItemOfType(name, this.subNamespaces, () => new Class(this, name));
+	}
+}
+
+function forEach<T>(list:T[] | undefined, cb: (value:T, index:number, array:T[]) => void) {
+	if (list !== undefined) {
+		list.forEach(cb);
+	}
+}
+
+function parseFQN(fqn:string) : string[] {
+	return fqn.split(".").map((part) => {
+		if (part.charCodeAt(0) == 34 /* " */ && part.charCodeAt(part.length-1) == 34 /* " */) {
+			return part.substr(1, part.length-2);
+		} else {
+			return part;
+		}
+	}).map(escapeRustName);
+}
+
+function collectSymbolEnclosingNamespaces(symbol:ts.Symbol, context:Context) : [Namespace,string] {
+	let parsedFqn = parseFQN(context.checker.getFullyQualifiedName(symbol));
+	let curNS = context.rootNameSpace;
+	for (let i = 0; i < parsedFqn.length-1; i++) {
+		curNS = curNS.getOrCreateSubNamespace(parsedFqn[i]);
+	}
+	return [curNS, parsedFqn[parsedFqn.length-1]];
+}
+
+function collectClass(symbol:ts.Symbol, type:ts.InterfaceType, context:Context) : Class {
+	console.assert(type.isClass());
+
+	let [ns, name] = collectSymbolEnclosingNamespaces(symbol, context);
+
+	let result = ns.getOrCreateClass(symbol, type, namespace, context);
+
+	let bases = context.checker.getBaseTypes(type);
+	bases.forEach((base) => {
+		let baseSym = base.symbol;
+		if (baseSym !== undefined) {
+			if (base.isClass()) {
+				if (result.superClass === undefined) {
+					result.superClass = collectClass(baseSym, base, context);
+				}
+			} else if (base.isClassOrInterface()) {
+				let i = collectInterface(baseSym, base, context);
+				result.pushDirectImpl(i);
+			}
+		}
+	})
+
+	return result;
+}
+
+function collectInterface(symbol:ts.Symbol, type:ts.InterfaceType, context:Context) : Interface {
+	let [ns, name] = collectSymbolEnclosingNamespaces(symbol, context);
+
+	let result = ns.getOrCreateInterface(name);
+
+	let bases = context.checker.getBaseTypes(type);
+	bases.forEach((base) => {
+		let baseSym = base.symbol;
+		if (baseSym !== undefined) {
+			if (base.isClassOrInterface()) {
+				let i = collectInterface(baseSym, base, context);
+				result.pushDirectImpl(i);
+			}
+		}
+	})
+
+	return result;
 }
 
 function generateDocumentation(fileNames: string[], options: ts.CompilerOptions, outDir:string): void {
@@ -609,6 +611,19 @@ function generateDocumentation(fileNames: string[], options: ts.CompilerOptions,
 		}
 	})
 
+	for (const sourceFile of program.getSourceFiles()) {
+		if (fileNames.indexOf(sourceFile.fileName) < 0) {
+			continue;
+		}
+		console.log(sourceFile.fileName);
+		let sfSymb = checker.getSymbolAtLocation(sourceFile);
+		if (sfSymb !== undefined) {
+			checker.getExportsOfModule(sfSymb).forEach((sfExp) => {
+				console.log(checker.symbolToString(sfExp));
+			});
+		}
+	}
+
 	return;
 	
 	console.log("checking...");
@@ -617,15 +632,24 @@ function generateDocumentation(fileNames: string[], options: ts.CompilerOptions,
 	
 	mkdirp.sync(path.join(outDir, "src"));
 
-	let context = {
+	let context : Context = {
 		sourceFiles: fileNames,
-		checker: checker
+		checker: checker,
+		rootNameSpace: new Namespace(undefined, "")
 	};
 
     // Visit every sourceFile in the program
     for (const sourceFile of program.getSourceFiles()) {
 		if (fileNames.indexOf(sourceFile.fileName) < 0) {
 			continue;
+		}
+		console.log(sourceFile.fileName);
+		let sfType = checker.getTypeAtLocation(sourceFile);
+		let sfSymb = sfType.symbol;
+		if (sfSymb !== undefined) {
+			checker.getExportsOfModule(sfSymb!).forEach((sfExp) => {
+				console.log(checker.symbolToString(sfExp));
+			});
 		}
 		let rootNamespace = new Namespace(undefined, "");
 		ts.forEachChild(sourceFile, (n) => visit(n, rootNamespace));
@@ -811,9 +835,13 @@ function generateDocumentation(fileNames: string[], options: ts.CompilerOptions,
     }
 }
 
-let config = readTsConfig("test/pixi.js/tsconfig.json", "test/pixi.js");
-if (config) {
-	generateDocumentation(["test/pixi.js/index.d.ts"], config.options, "test/pixi.js/output");
-}
+let testDir = "test/pixi.js";
+//let testDir = "test/react";
+let tsconfigFile = testDir+"/tsconfig.json";
+let dtsFile = testDir+"/index.d.ts";
+let outDir = testDir+"/output";
 
-console.log("ttt");
+let config = readTsConfig(tsconfigFile, testDir);
+if (config) {
+	generateDocumentation([dtsFile], config.options, outDir);
+}
