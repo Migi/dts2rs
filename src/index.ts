@@ -31,26 +31,364 @@ function syntaxKindToName(kind: ts.SyntaxKind) {
     return (<any>ts).SyntaxKind[kind];
 }
 
-class Class {
+class ClassOrInterface {
 	constructor(public symbol: ts.Symbol, public type: ts.InterfaceType, public namespace: Namespace, public context: Context) {
-		let checker = context.checker;
-
-		this.superClass = undefined;
+		this.name = symbol.name;
+		this.rustName = escapeRustName(this.name);
 		this.directImpls = [];
 	}
 
-	superClass: Class | undefined;
+	pushDirectImpl(i:Interface) {
+		for (let ownI of this.directImpls) {
+			if (ownI.name == i.name) {
+				return;
+			}
+		}
+		this.directImpls.push(i);
+	}
+
+	protected emitDocs(writeln: (s:string) => void, context: Context) {
+		let docs = this.symbol.getDocumentationComment(context.checker);
+		for (const docLine of docs) {
+			writeln("/// "+docLine);
+		}
+	}
+
+	name: string;
+	rustName: string;
 	directImpls: Interface[];
 }
 
-class Interface {
+class Class extends ClassOrInterface {
 	constructor(public symbol: ts.Symbol, public type: ts.InterfaceType, public namespace: Namespace, public context: Context) {
+		super(symbol, type, namespace, context);
 		let checker = context.checker;
 
-		this.directImpls = [];
+		this.superClassOfTrait = escapeRustName("__SuperClassOf_"+symbol.name);
+		this.superClass = undefined;
 	}
 
-	directImpls: Interface[];
+	superClassOfTrait: string;
+	superClass: Class | undefined;
+
+	forEachSuperClass(cb: (i:Class) => void) {
+		if (this.superClass !== undefined) {
+			this.superClass.forEachSuperClass(cb);
+			cb(this.superClass);
+		}
+	}
+
+	forEachSuperImpl(cb: (i:Interface) => void) {
+		let visited = new Set<Interface>();
+		function rec(node:ClassOrInterface) {
+			for (let i of node.directImpls) {
+				if (!visited.has(i)) {
+					visited.add(i);
+					rec(i);
+					cb(i);
+				}
+			}
+		}
+		this.forEachSuperClass((c) => { rec(c); });
+		rec(this);
+	}
+
+	emit(writeln: (s:string) => void, context: Context) : void {
+		let checker = context.checker;
+		this.emitDocs(writeln, context);
+		writeln("pub struct "+this.rustName+"(::stdweb::Reference);");
+		writeln("");
+		writeln("pub trait "+this.superClassOfTrait+":");
+		//writeln("\t"+BASE_TRAIT_NAME+" +");
+		this.forEachSuperClass((c) => {
+			writeln("\t"+this.namespace.getRustPathTo(c.namespace, c.superClassOfTrait)+" +");
+		});
+		this.forEachSuperImpl((i) => {
+			writeln("\t"+this.namespace.getRustPathTo(i.namespace, i.implementsTrait)+" +");
+		});
+		writeln("{}");
+		writeln("");
+		this.forEachSuperClass((superClass) => {
+			writeln("impl "+ this.namespace.getRustPathTo(superClass.namespace, superClass.superClassOfTrait) +" for "+this.rustName+" {");
+			writeln("}");
+			writeln("");
+		});
+		this.forEachSuperImpl((i) => {
+			writeln("impl "+ this.namespace.getRustPathTo(i.namespace, i.implementsTrait) +" for "+this.rustName+" {");
+			writeln("}");
+			writeln("");
+		});
+
+		/*let members = this.symbol.members;
+		if (members !== undefined) {
+			members.forEach((mem) => {
+				console.log(" - "+mem.name);
+			});
+		}*/
+
+		forEach(this.symbol.getDeclarations(), (decl) => {
+			if (!ts.isClassDeclaration(decl)) {
+				return;
+			}
+			let declName = decl.name;
+			if (declName == undefined) {
+				return;
+			}
+			let declNameType = context.checker.getTypeOfSymbolAtLocation(this.symbol, declName);
+			let constructors = declNameType.getConstructSignatures();
+			let numConstructorsWithNArgs : {[key:number]: number} = {};
+			let numConstructorsWithNArgsEmitted : {[key:number]: number} = {};
+			constructors.forEach((constructor) => {
+				let n = constructor.parameters.length;
+				if (numConstructorsWithNArgs.hasOwnProperty(n)) {
+					numConstructorsWithNArgs[n] += 1;
+				} else {
+					numConstructorsWithNArgs[n] = 1;
+				}
+			});
+			constructors.forEach((constructor) => {
+				{
+					let nArgs = constructor.parameters.length;
+					let newFnName = "";
+					if (numConstructorsWithNArgs[nArgs] > 1) {
+						if (numConstructorsWithNArgsEmitted.hasOwnProperty(nArgs)) {
+							numConstructorsWithNArgsEmitted[nArgs] += 1;
+						} else {
+							numConstructorsWithNArgsEmitted[nArgs] = 1;
+						}
+						newFnName = "__new_"+this.rustName + nArgs.toString() + numToAbc(numConstructorsWithNArgsEmitted[nArgs]);
+					} else if (constructors.length > 1) {
+						newFnName = "__new_"+this.rustName + nArgs.toString();
+					} else {
+						newFnName = "__new_"+this.rustName;
+					}
+					let line = "pub fn "+newFnName+"(";
+
+					let firstParam = true;
+					constructor.parameters.forEach((constructorParam) => {
+						if (!firstParam) {
+							line += ", ";
+						}
+						firstParam = false;
+						
+						//line += escapeRustName(constructorParam.name) + ": " + rustifyType(checker.getDeclaredTypeOfSymbol(constructorParam), context) + ", ";
+						line += escapeRustName(constructorParam.name) + ": " + rustifyType(checker.getTypeOfSymbolAtLocation(constructorParam, constructorParam.valueDeclaration!), this.namespace, context);
+					});
+
+					line += ") -> "+this.rustName+" {";
+
+					writeln(line);
+				}
+				{
+					let line = "\tjs!(new "+checker.getFullyQualifiedName(this.symbol) + "(";
+					let firstParam = true;
+					constructor.parameters.forEach((constructorParam) => {
+						if (!firstParam) {
+							line += ", ";
+						}
+						firstParam = false;
+						line += "@{"+escapeRustName(constructorParam.name)+"}";
+					});
+					line += "))";
+					writeln(line);
+				}
+				writeln("}");
+			});
+			if (constructors.length > 0) {
+				writeln("");
+			}
+
+			/*if (symbol.members !== undefined) {
+				symbol.members.forEach((memSym) => {
+					let isProtected = false;
+					if (memSym.declarations !== undefined) {
+						let mods = memSym.declarations[0].modifiers;
+						if (mods !== undefined) {
+							isProtected = mods.some((v) => v.kind == ts.SyntaxKind.ProtectedKeyword);
+						}
+					}
+					//console.log(" - member: "+memSym.getName()+". Protected: "+isProtected);
+					if (memSym.declarations) {
+						if (memSym.declarations.length > 0) {
+							let decl = memSym.declarations[0];
+							if (decl.modifiers) {
+								//console.log(decl.modifiers.map((v,i,a) => syntaxKindToName(v.kind)));
+							}
+							//console.log(memSym.declarations!);
+						}
+					}
+					let memType = checker.getTypeOfSymbolAtLocation(memSym, memSym.valueDeclaration!);
+					let cons = memType.getCallSignatures();
+					cons.forEach((v) => {
+						v.parameters.forEach((p) => {
+							let paramT = checker.getTypeOfSymbolAtLocation(p, p.valueDeclaration!);
+							//console.log("    - param: "+p.name+": "+checker.typeToString(paramT));
+						});
+					});
+				});
+			}*/
+		});
+	}
+}
+
+class Interface extends ClassOrInterface {
+	constructor(public symbol: ts.Symbol, public type: ts.InterfaceType, public namespace: Namespace, public context: Context) {
+		super(symbol, type, namespace, context);
+		this.implementsTrait = escapeRustName("__Implements_"+symbol.name);
+	}
+
+	implementsTrait : string;
+
+	forEachSuperImpl(cb: (i:Interface) => void) {
+		let visited = new Set<Interface>();
+		function rec(node:ClassOrInterface) {
+			for (let i of node.directImpls) {
+				if (!visited.has(i)) {
+					visited.add(i);
+					rec(i);
+					cb(i);
+				}
+			}
+		}
+		rec(this);
+	}
+
+	emit(writeln: (s:string) => void, context: Context) : void {
+		let checker = context.checker;
+		this.emitDocs(writeln, context);
+		writeln("pub struct "+this.rustName+"(::stdweb::Reference);");
+		writeln("");
+		writeln("pub trait "+this.implementsTrait+":");
+		//writeln("\t"+BASE_TRAIT_NAME+" +");
+		this.forEachSuperImpl((i) => {
+			writeln("\t"+this.namespace.getRustPathTo(i.namespace, i.implementsTrait)+" +");
+		});
+		writeln("{}");
+		writeln("");
+		this.forEachSuperImpl((i) => {
+			writeln("impl "+ this.namespace.getRustPathTo(i.namespace, i.implementsTrait) +" for "+this.rustName+" {");
+			writeln("}");
+			writeln("");
+		});
+	}
+}
+
+class Namespace {
+	constructor(public parent: Namespace | undefined, public name: string) {
+		if (this.name === "" && this.parent !== undefined) {
+			console.error("Namespace without name found that isn't the root namespace!");
+			console.error("Parent: "+this.parent.toStringFull());
+			throw "terminating...";
+		}
+		this.rustName = escapeRustName(this.name);
+		this.subNamespaces = {};
+		this.classes = {};
+		this.interfaces = {};
+		this.functions = {};
+	}
+
+	rustName: string;
+	subNamespaces: {[name:string]: Namespace};
+	classes: {[name:string]: Class};
+	interfaces: {[name:string]: Interface};
+	functions: {[name:string]: Function};
+
+	toStringFull() : string {
+		if (this.name == "") {
+			return "the root namespace";
+		} else if (this.parent === undefined) {
+			return "namespace "+this.name;
+		} else {
+			return this.parent.toStringFull() + "::" + this.name;
+		}
+	}
+
+	private getOrCreateItemOfType<T>(name: string, nameMap: {[name:string]: T}, creator: () => T) : T {
+		if (nameMap.hasOwnProperty(name)) {
+			return nameMap[name];
+		} else {
+			let newItem = creator();
+			nameMap[name] = newItem;
+			return newItem;
+		}
+	}
+
+	getOrCreateSubNamespace(name: string) : Namespace {
+		return this.getOrCreateItemOfType(name, this.subNamespaces, () => new Namespace(this, name));
+	}
+
+	getOrCreateClass(symbol: ts.Symbol, type: ts.InterfaceType, context: Context) : Class {
+		return this.getOrCreateItemOfType(symbol.name, this.classes, () => new Class(symbol, type, this, context));
+	}
+
+	getOrCreateInterface(symbol: ts.Symbol, type: ts.InterfaceType, context: Context) : Interface {
+		return this.getOrCreateItemOfType(symbol.name, this.interfaces, () => new Interface(symbol, type, this, context));
+	}
+
+	getRustPathTo(other: Namespace, itemName: string) : string {
+		let fromHere = new Map<Namespace, string>();
+		let fqn : string | undefined = undefined;
+		function rec(node: Namespace, pathSoFar: string) {
+			fromHere.set(node, pathSoFar);
+			if (node.parent !== undefined) {
+				if (node.name !== "") {
+					if (pathSoFar != "") {
+						rec(node.parent, node.name + "::" + pathSoFar);
+					} else {
+						rec(node.parent, node.name);
+					}
+				} else {
+					fromHere.set(node.parent, pathSoFar);
+				}
+			} else {
+				fqn = pathSoFar;
+			}
+		}
+		rec(other, "");
+
+		let cur : Namespace | undefined = this;
+		while (cur !== undefined) {
+			if (fromHere.has(cur)) {
+				let result = fromHere.get(cur)!;
+				if (result.length == 0) {
+					return itemName;
+				} else {
+					return result + "::" + itemName;
+				}
+			} else {
+				cur = cur.parent;
+			}
+		}
+
+		if (fqn !== undefined) {
+			if (fqn!.length == 0) {
+				return itemName;
+			} else {
+				return fqn + "::" + itemName;
+			}
+		} else {
+			return itemName;
+		}
+	}
+
+	emit(writeln: (s:string) => void, context:Context) {
+		let checker = context.checker;
+		forEachKeyValueInObject(this.subNamespaces, (subNsName, subNS) => {
+			writeln("pub mod "+subNS.rustName+" {");
+			writeln("\tuse super::*;");
+			writeln("");
+			subNS.emit((s) => writeln("\t"+s), context);
+			writeln("}");
+		});
+
+		forEachKeyValueInObject(this.classes, (className, theClass) => {
+			theClass.emit(writeln, context);
+		});
+
+		forEachKeyValueInObject(this.interfaces, (className, theInterface) => {
+			theInterface.emit(writeln, context);
+		});
+	}
 }
 
 const BASE_TRAIT_NAME = "__WrapsJsRef";
@@ -160,7 +498,7 @@ let typeToStdwebTypeMap : {[key:string]: string} = {};
 	// TODO: add the rest
 }
 
-function rustifyType(t:ts.Type, shouldBoxTrait:boolean, context:Context) : string | undefined {
+function rustifyType(t:ts.Type, curNamespace: Namespace, context:Context) : string | undefined {
 	let f = t.flags;
 	let symbol = undefined;
 	if (t.aliasSymbol !== undefined) {
@@ -175,12 +513,13 @@ function rustifyType(t:ts.Type, shouldBoxTrait:boolean, context:Context) : strin
 				let fileName = decl.getSourceFile().fileName;
 				if (context.sourceFiles.indexOf(fileName) >= 0) {
 					let qualifiedName = context.checker.getFullyQualifiedName(symbol);
-					if (qualifiedName !== undefined && qualifiedName !== "__type") {
-						let rustName = rustifyFullyQualifiedName(qualifiedName);
-						if (shouldBoxTrait) {
-							return "Box<"+rustName+">";
-						} else {
-							return "impl "+rustName;
+					let hasEnclosingNS = getSymbolEnclosingNamespace(symbol, context);
+					if (hasEnclosingNS !== undefined) {
+						let [enclosingNS, rustName] = hasEnclosingNS;
+						if (enclosingNS.classes.hasOwnProperty(rustName)) {
+							return "impl "+curNamespace.getRustPathTo(enclosingNS, enclosingNS.classes[rustName].superClassOfTrait);
+						} else if (enclosingNS.interfaces.hasOwnProperty(rustName)) {
+							return "impl "+curNamespace.getRustPathTo(enclosingNS, enclosingNS.interfaces[rustName].implementsTrait);
 						}
 					}
 				} else {
@@ -276,222 +615,15 @@ function numToAbc(num:number) : string {
 	return result;
 }
 
-function emitNamespace(ns:Namespace, writeln: (s:string) => void, context:Context) {
-	let checker = context.checker;
-	for (const item of ns.exportedItems) {
-		if (item instanceof Class) {
-			let symbol = item.symbol;
-			//console.log("class full name: "+checker.getFullyQualifiedName(symbol));
-			let name = symbol.getName();
-			let rustEscapedName = escapeRustName(name);
-			let docs = symbol.getDocumentationComment(checker);
-			let heritageClauses = item.classDecl.heritageClauses;
-			let type = checker.getTypeOfSymbolAtLocation(symbol, item.nameNode);
-
-			for (const docLine of docs) {
-				writeln("/// "+docLine);
-			}
-			writeln("pub trait "+rustEscapedName+":");
-			writeln("\t"+BASE_TRAIT_NAME+" +");
-
-			if (heritageClauses !== undefined) {
-				heritageClauses.forEach((clause) => {
-					clause.types.forEach((baseTypeExpr) => {
-						let baseType = checker.getTypeFromTypeNode(baseTypeExpr);
-						if (baseType.symbol !== undefined) {
-							if (clause.token == ts.SyntaxKind.ExtendsKeyword) {
-								writeln("\t"+rustifyFullyQualifiedName(checker.getFullyQualifiedName(baseType.symbol))+" +");
-							} else {
-								writeln("\t"+rustifyFullyQualifiedName(checker.getFullyQualifiedName(baseType.symbol))+" +");
-							}
-						}
-					});
-				});
-			}
-			writeln("{}");
-			writeln("");
-			writeln("impl "+rustEscapedName+" for ::stdweb::Value {");
-			writeln("}");
-			writeln("");
-			writeln("impl "+rustEscapedName+" for Box<"+rustEscapedName+"> {");
-			writeln("}");
-			writeln("");
-
-			//console.log("Symbol "+symbol.getName()+", docs: "+ts.displayPartsToString(symbol.getDocumentationComment(checker))+", type "+checker.typeToString(checker.getTypeOfSymbolAtLocation(symbol, symbol.valueDeclaration!)));
-			/*function serializeSignature(signature: ts.Signature) {
-				return {
-					parameters: signature.parameters.map(serializeSymbol),
-					returnType: checker.typeToString(signature.getReturnType()),
-					documentation: ts.displayPartsToString(signature.getDocumentationComment(checker))
-				};
-			}*/
-
-			let constructors = type.getConstructSignatures();
-			let numConstructorsWithNArgs : {[key:number]: number} = {};
-			let numConstructorsWithNArgsEmitted : {[key:number]: number} = {};
-			constructors.forEach((constructor) => {
-				let n = constructor.parameters.length;
-				if (numConstructorsWithNArgs.hasOwnProperty(n)) {
-					numConstructorsWithNArgs[n] += 1;
-				} else {
-					numConstructorsWithNArgs[n] = 1;
-				}
-			});
-			constructors.forEach((constructor) => {
-				{
-					let nArgs = constructor.parameters.length;
-					let newFnName = "";
-					if (numConstructorsWithNArgs[nArgs] > 1) {
-						if (numConstructorsWithNArgsEmitted.hasOwnProperty(nArgs)) {
-							numConstructorsWithNArgsEmitted[nArgs] += 1;
-						} else {
-							numConstructorsWithNArgsEmitted[nArgs] = 1;
-						}
-						newFnName = "__new_"+rustEscapedName + nArgs.toString() + numToAbc(numConstructorsWithNArgsEmitted[nArgs]);
-					} else if (constructors.length > 1) {
-						newFnName = "__new_"+rustEscapedName + nArgs.toString();
-					} else {
-						newFnName = "__new_"+rustEscapedName;
-					}
-					let line = "pub fn "+newFnName+"(";
-
-					let firstParam = true;
-					constructor.parameters.forEach((constructorParam) => {
-						if (!firstParam) {
-							line += ", ";
-						}
-						firstParam = false;
-						//line += escapeRustName(constructorParam.name) + ": " + rustifyType(checker.getDeclaredTypeOfSymbol(constructorParam), context) + ", ";
-						line += escapeRustName(constructorParam.name) + ": " + rustifyType(checker.getTypeOfSymbolAtLocation(constructorParam, constructorParam.valueDeclaration!), false, context);
-					});
-
-					line += ") -> impl "+rustEscapedName+" {";
-
-					writeln(line);
-				}
-				{
-					let line = "\tjs!(new "+checker.getFullyQualifiedName(symbol) + "(";
-					let firstParam = true;
-					constructor.parameters.forEach((constructorParam) => {
-						if (!firstParam) {
-							line += ", ";
-						}
-						firstParam = false;
-						line += "@{"+escapeRustName(constructorParam.name)+"}";
-					});
-					line += "))";
-					writeln(line);
-				}
-				writeln("}");
-			});
-			if (constructors.length > 0) {
-				writeln("");
-			}
-
-			if (symbol.members !== undefined) {
-				symbol.members.forEach((memSym) => {
-					let isProtected = false;
-					if (memSym.declarations !== undefined) {
-						let mods = memSym.declarations[0].modifiers;
-						if (mods !== undefined) {
-							isProtected = mods.some((v) => v.kind == ts.SyntaxKind.ProtectedKeyword);
-						}
-					}
-					//console.log(" - member: "+memSym.getName()+". Protected: "+isProtected);
-					if (memSym.declarations) {
-						if (memSym.declarations.length > 0) {
-							let decl = memSym.declarations[0];
-							if (decl.modifiers) {
-								//console.log(decl.modifiers.map((v,i,a) => syntaxKindToName(v.kind)));
-							}
-							//console.log(memSym.declarations!);
-						}
-					}
-					let memType = checker.getTypeOfSymbolAtLocation(memSym, memSym.valueDeclaration!);
-					let cons = memType.getCallSignatures();
-					cons.forEach((v) => {
-						v.parameters.forEach((p) => {
-							let paramT = checker.getTypeOfSymbolAtLocation(p, p.valueDeclaration!);
-							//console.log("    - param: "+p.name+": "+checker.typeToString(paramT));
-						});
-					});
-				});
-			}
-		} else if (item instanceof Interface) {
-			let escapedName = escapeRustName(item.name);
-			writeln("pub trait "+escapedName+": "+BASE_TRAIT_NAME+" {");
-			writeln("}");
-			writeln("");
-			writeln("impl "+escapedName+" for ::stdweb::Value {");
-			writeln("}");
-			writeln("");
-		} else if (item instanceof TypeAlias) {
-			let escapedName = escapeRustName(item.name);
-			writeln("pub trait "+escapedName+": "+BASE_TRAIT_NAME+" {");
-			writeln("}");
-			writeln("");
-			writeln("impl "+escapedName+" for ::stdweb::Value {");
-			writeln("}");
-			writeln("");
-		} else if (item instanceof Namespace) {
-			let escapedName = escapeRustName(item.name);
-			writeln("pub mod "+escapedName+" {");
-			writeln("\tuse super::*;");
-			writeln("");
-			emitNamespace(item, (s) => writeln("\t"+s), context);
-			writeln("}");
+function forEachKeyValueInObject<T>(obj: {[key:string]:T}, cb: (key:string, value:T) => void) {
+	for (const key in obj) {
+		if (obj.hasOwnProperty(key)) {
+			cb(key, obj[key]);
 		}
 	}
 }
 
-class Namespace {
-	constructor(public parent: Namespace | undefined, public name: string) {
-		if (this.name === "" && this.parent !== undefined) {
-			console.error("Namespace without name found that isn't the root namespace!");
-			console.error("Parent: "+this.parent.toStringFull());
-			throw "terminating...";
-		}
-		this.subNamespaces = {};
-		this.classes = {};
-		this.interfaces = {};
-		this.functions = {};
-	}
-
-	subNamespaces: {[name:string]: Namespace};
-	classes: {[name:string]: Class};
-	interfaces: {[name:string]: Interface};
-	functions: {[name:string]: Function};
-
-	toStringFull() : string {
-		if (this.name == "") {
-			return "the root namespace";
-		} else if (this.parent === undefined) {
-			return "namespace "+this.name;
-		} else {
-			return this.parent.toStringFull() + "::" + this.name;
-		}
-	}
-
-	private getOrCreateItemOfType<T>(name: string, nameMap: {[name:string]: T}, creator: () => T) : T {
-		if (nameMap.hasOwnProperty(name)) {
-			return nameMap[name];
-		} else {
-			let newItem = creator();
-			nameMap[name] = newItem;
-			return newItem;
-		}
-	}
-
-	getOrCreateSubNamespace(name: string) : Namespace {
-		return this.getOrCreateItemOfType(name, this.subNamespaces, () => new Namespace(this, name));
-	}
-
-	getOrCreateClass(name: string) : Class {
-		return this.getOrCreateItemOfType(name, this.subNamespaces, () => new Class(this, name));
-	}
-}
-
-function forEach<T>(list:T[] | undefined, cb: (value:T, index:number, array:T[]) => void) {
+function forEach<T>(list:ReadonlyArray<T> | undefined, cb: (value:T, index:number, array:ReadonlyArray<T>) => void) {
 	if (list !== undefined) {
 		list.forEach(cb);
 	}
@@ -516,12 +648,29 @@ function collectSymbolEnclosingNamespaces(symbol:ts.Symbol, context:Context) : [
 	return [curNS, parsedFqn[parsedFqn.length-1]];
 }
 
+function getSymbolEnclosingNamespace(symbol:ts.Symbol, context:Context) : [Namespace,string] | undefined {
+	let parsedFqn = parseFQN(context.checker.getFullyQualifiedName(symbol));
+	let curNS = context.rootNameSpace;
+	for (let i = 0; i < parsedFqn.length-1; i++) {
+		if (curNS.subNamespaces.hasOwnProperty(parsedFqn[i])) {
+			curNS = curNS.subNamespaces[parsedFqn[i]];
+		} else {
+			return undefined;
+		}
+	}
+	return [curNS, parsedFqn[parsedFqn.length-1]];
+}
+
 function collectClass(symbol:ts.Symbol, type:ts.InterfaceType, context:Context) : Class {
 	console.assert(type.isClass());
 
 	let [ns, name] = collectSymbolEnclosingNamespaces(symbol, context);
 
-	let result = ns.getOrCreateClass(symbol, type, namespace, context);
+	if (ns.classes.hasOwnProperty(name)) {
+		return ns.classes[name];
+	}
+
+	let result = ns.getOrCreateClass(symbol, type, context);
 
 	let bases = context.checker.getBaseTypes(type);
 	bases.forEach((base) => {
@@ -536,7 +685,27 @@ function collectClass(symbol:ts.Symbol, type:ts.InterfaceType, context:Context) 
 				result.pushDirectImpl(i);
 			}
 		}
-	})
+	});
+
+	// the above code doesn't find the classes interfaces, so do it manually
+	forEach(symbol.declarations, (decl) => {
+		if (ts.isClassDeclaration(decl)) {
+			forEach(decl.heritageClauses, (her) => {
+				if (her.token == ts.SyntaxKind.ImplementsKeyword) {
+					forEach(her.types, (type) => {
+						let implType = context.checker.getTypeAtLocation(type);
+						let implSym = implType.symbol;
+						if (implSym !== undefined) {
+							if (implType.isClassOrInterface()) {
+								let i = collectInterface(implSym, implType, context);
+								result.pushDirectImpl(i);
+							}
+						}
+					});
+				}
+			});
+		}
+	});
 
 	return result;
 }
@@ -544,7 +713,11 @@ function collectClass(symbol:ts.Symbol, type:ts.InterfaceType, context:Context) 
 function collectInterface(symbol:ts.Symbol, type:ts.InterfaceType, context:Context) : Interface {
 	let [ns, name] = collectSymbolEnclosingNamespaces(symbol, context);
 
-	let result = ns.getOrCreateInterface(name);
+	if (ns.interfaces.hasOwnProperty(name)) {
+		return ns.interfaces[name];
+	}
+
+	let result = ns.getOrCreateInterface(symbol, type, context);
 
 	let bases = context.checker.getBaseTypes(type);
 	bases.forEach((base) => {
@@ -560,77 +733,37 @@ function collectInterface(symbol:ts.Symbol, type:ts.InterfaceType, context:Conte
 	return result;
 }
 
-function generateDocumentation(fileNames: string[], options: ts.CompilerOptions, outDir:string): void {
+function collect(symbol: ts.Symbol, context: Context) {
+	// ugly hack because for some reason getDeclaredTypeOfSymbol(symbol) doesn't have construct signatures...
+	/*let type_ : undefined | ts.Type = undefined;
+	forEach(symbol.declarations, (decl) => {
+		if (type_ == undefined) {
+			if (ts.isClassDeclaration(decl) && decl.name) {
+				type_ = context.checker.getTypeOfSymbolAtLocation(symbol, decl.name);
+			}
+		}
+	});
+	let type = (type_ == undefined ? context.checker.getDeclaredTypeOfSymbol(symbol) : type_);*/
+	let type = context.checker.getDeclaredTypeOfSymbol(symbol);
+
+	/*if (symbol.name == "Application") {
+		type.is
+		console.log(type.flags);
+	}*/
+
+	if (type.isClass()) {
+		collectClass(symbol, type, context);
+	} else if (type.isClassOrInterface()) {
+		collectInterface(symbol, type, context);
+	}
+}
+
+function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string): void {
     // Build a program using the set of root file names in fileNames
 	let program = ts.createProgram(fileNames, options);
 
     // Get the checker, we will use it to find more about classes
 	let checker = program.getTypeChecker();
-
-	let modules = checker.getAmbientModules();
-
-	modules.forEach((m) => {
-		console.log(m.name);
-		let decls = m.getDeclarations();
-		let shouldExport = false;
-		if (decls !== undefined) {
-			console.log(" - " + decls.map((mDecl) => {
-				let fileName = mDecl.getSourceFile().fileName;
-				if (fileNames.indexOf(fileName) >= 0) {
-					shouldExport = true;
-				}
-			}));
-			if (shouldExport) {
-				let exps = checker.getExportsOfModule(m);
-				if (exps !== undefined) {
-					exps.forEach((e) => {
-						console.log(" - exports: "+e.name+": "+checker.getFullyQualifiedName(e));
-						let type = checker.getDeclaredTypeOfSymbol(e);
-						console.log(" - - type: "+checker.typeToString(type));
-						if (type.isClassOrInterface()) {
-							let bases = checker.getBaseTypes(type);
-							bases.forEach((base) => {
-								console.log(" - - - base: "+checker.typeToString(base));
-								if (base.symbol !== undefined) {
-									console.log(" - - - fqn: "+checker.getFullyQualifiedName(base.symbol));
-								}
-							});
-						}
-						/*let members = checker.getRootSymbols(e);
-						if (members !== undefined) {
-							checker.getBaseTypes
-							members.forEach((mem) => {
-								console.log(" - - member: "+mem.name+": "+checker.getFullyQualifiedName(mem));
-							});
-						}*/
-					});
-				} else {
-					console.log("it's undefined");
-				}
-			}
-		}
-	})
-
-	for (const sourceFile of program.getSourceFiles()) {
-		if (fileNames.indexOf(sourceFile.fileName) < 0) {
-			continue;
-		}
-		console.log(sourceFile.fileName);
-		let sfSymb = checker.getSymbolAtLocation(sourceFile);
-		if (sfSymb !== undefined) {
-			checker.getExportsOfModule(sfSymb).forEach((sfExp) => {
-				console.log(checker.symbolToString(sfExp));
-			});
-		}
-	}
-
-	return;
-	
-	console.log("checking...");
-
-	let declaring : boolean | string = true; // if false, not declaring. If true, last keyword was "declare". If string s, last 2 nodes were "declare s".
-	
-	mkdirp.sync(path.join(outDir, "src"));
 
 	let context : Context = {
 		sourceFiles: fileNames,
@@ -638,173 +771,74 @@ function generateDocumentation(fileNames: string[], options: ts.CompilerOptions,
 		rootNameSpace: new Namespace(undefined, "")
 	};
 
-    // Visit every sourceFile in the program
-    for (const sourceFile of program.getSourceFiles()) {
+	let modules = checker.getAmbientModules();
+	modules.forEach((m) => {
+		let shouldExport = false;
+		forEach(m.getDeclarations(), (mDecl) => {
+			let fileName = mDecl.getSourceFile().fileName;
+			if (fileNames.indexOf(fileName) >= 0) {
+				shouldExport = true;
+			}
+		});
+		if (shouldExport) {
+			forEach(checker.getExportsOfModule(m), (e) => {
+				collect(e, context);
+			});
+		}
+	});
+
+	for (const sourceFile of program.getSourceFiles()) {
 		if (fileNames.indexOf(sourceFile.fileName) < 0) {
 			continue;
 		}
-		console.log(sourceFile.fileName);
-		let sfType = checker.getTypeAtLocation(sourceFile);
-		let sfSymb = sfType.symbol;
+		let sfSymb = checker.getSymbolAtLocation(sourceFile);
 		if (sfSymb !== undefined) {
-			checker.getExportsOfModule(sfSymb!).forEach((sfExp) => {
-				console.log(checker.symbolToString(sfExp));
+			checker.getExportsOfModule(sfSymb).forEach((sfExp) => {
+				collect(sfExp, context);
 			});
 		}
-		let rootNamespace = new Namespace(undefined, "");
-		ts.forEachChild(sourceFile, (n) => visit(n, rootNamespace));
+	}
 
-		let outStr = "#![allow(non_camel_case_types, non_snake_case, unused_imports)]\n";
-		outStr += "\n";
-		outStr += "#[macro_use]\n";
-		outStr += "extern crate stdweb;\n";
-		outStr += "\n";
-		outStr += "pub trait "+BASE_TRAIT_NAME+" : ::stdweb::private::JsSerialize + ::stdweb::private::JsSerializeOwned {\n";
-		outStr += "\tfn __get_jsref(&self) -> ::stdweb::Reference;\n";
-		outStr += "}\n";
-		outStr += "\n";
-		outStr += "impl "+BASE_TRAIT_NAME+" for ::stdweb::Value {\n";
-		outStr += "\tfn __get_jsref(&self) -> ::stdweb::Reference {\n";
-		outStr += "\t\tif let ::stdweb::Value::Reference(r) = self {\n";
-		outStr += "\t\t\tr.clone()\n";
-		outStr += "\t\t} else {\n";
-		outStr += "\t\t\tpanic!(\"__get_jsref() called on non-reference!\")\n";
-		outStr += "\t\t}\n";
-		outStr += "\t}\n";
-		outStr += "}\n";
-		outStr += "\n";
-		outStr += "\n";
-		outStr += "#[derive(Clone,Debug)]\n";
-		outStr += "pub struct Any(::stdweb::Value);\n";
-		outStr += "\n";
-		emitNamespace(rootNamespace, (s) => { outStr += s+"\n" }, context);
-		
-		fs.writeFile(path.join(outDir, "Cargo.toml"), emitCargoToml("dts2rs-generated-code"), undefined, (err) => {
-			if (err) {
-				console.error("Error writing Cargo.toml: "+err.message);
-			}
-		});
-
-		fs.writeFile(path.join(outDir, "src", "lib.rs"), outStr, undefined, (err) => {
-			if (err) {
-				console.error("Error writing lib.rs: "+err.message);
-			}
-		});
-    }
+	let outStr = "#![allow(non_camel_case_types, non_snake_case, unused_imports)]\n";
+	outStr += "\n";
+	outStr += "#[macro_use]\n";
+	outStr += "extern crate stdweb;\n";
+	outStr += "\n";
+	outStr += "pub trait "+BASE_TRAIT_NAME+" : ::stdweb::private::JsSerialize + ::stdweb::private::JsSerializeOwned {\n";
+	outStr += "\tfn __get_jsref(&self) -> ::stdweb::Reference;\n";
+	outStr += "}\n";
+	outStr += "\n";
+	outStr += "impl "+BASE_TRAIT_NAME+" for ::stdweb::Value {\n";
+	outStr += "\tfn __get_jsref(&self) -> ::stdweb::Reference {\n";
+	outStr += "\t\tif let ::stdweb::Value::Reference(r) = self {\n";
+	outStr += "\t\t\tr.clone()\n";
+	outStr += "\t\t} else {\n";
+	outStr += "\t\t\tpanic!(\"__get_jsref() called on non-reference!\")\n";
+	outStr += "\t\t}\n";
+	outStr += "\t}\n";
+	outStr += "}\n";
+	outStr += "\n";
+	outStr += "\n";
+	outStr += "#[derive(Clone,Debug)]\n";
+	outStr += "pub struct Any(::stdweb::Value);\n";
+	outStr += "\n";
+	context.rootNameSpace.emit((s) => { outStr += s+"\n" }, context);
 	
-	console.log("done.");
+	mkdirp.sync(path.join(outDir, "src"));
+	
+	fs.writeFile(path.join(outDir, "Cargo.toml"), emitCargoToml("dts2rs-generated-code"), undefined, (err) => {
+		if (err) {
+			console.error("Error writing Cargo.toml: "+err.message);
+		}
+	});
 
-    return;
+	fs.writeFile(path.join(outDir, "src", "lib.rs"), outStr, undefined, (err) => {
+		if (err) {
+			console.error("Error writing lib.rs: "+err.message);
+		}
+	});
 
-    /** visit nodes finding exported classes */
-    function visit(node: ts.Node, namespace: Namespace) {
-		//console.log("visiting node... "+node.kind.toString());
-        // Only consider exported nodes
-        /*if (isNodeExported(node)) {
-            return;
-		}*/
-		
-		let prevDeclaring = declaring;
-		declaring = true;
-
-        if (ts.isClassDeclaration(node) && node.name) {
-			let symbol = checker.getSymbolAtLocation(node.name);
-			if (symbol !== undefined) {
-				let c = new Class(node, symbol, node.name, context);
-				namespace.addItem(c);
-				let name = symbol.getName();
-				let docs = symbol.getDocumentationComment(checker);
-				let type = checker.getTypeOfSymbolAtLocation(symbol, node.name);
-				let constructors = type.getConstructSignatures();
-				//console.log("class "+name);
-				symbol.members!.forEach((memSym, key) => {
-					let isProtected = false;
-					if (memSym.declarations !== undefined) {
-						let mods = memSym.declarations[0].modifiers;
-						if (mods !== undefined) {
-							isProtected = mods.some((v) => v.kind == ts.SyntaxKind.ProtectedKeyword);
-						}
-					}
-					//console.log(" - member: "+memSym.getName()+". Protected: "+isProtected);
-					if (memSym.declarations) {
-						if (memSym.declarations.length > 0) {
-							let decl = memSym.declarations[0];
-							if (decl.modifiers) {
-								//console.log(decl.modifiers.map((v,i,a) => syntaxKindToName(v.kind)));
-							}
-							//console.log(memSym.declarations!);
-						}
-					}
-					let memType = checker.getTypeOfSymbolAtLocation(memSym, memSym.valueDeclaration!);
-					let cons = memType.getCallSignatures();
-					cons.forEach((v) => {
-						v.parameters.forEach((p) => {
-							let paramT = checker.getTypeOfSymbolAtLocation(p, p.valueDeclaration!);
-							//console.log("    - param: "+p.name+": "+checker.typeToString(paramT));
-						});
-					});
-				});
-				//console.log(type);
-				//console.log("Symbol "++", docs: "++", type "+checker.typeToString();
-			}
-			// No need to walk any further, class expressions/inner declarations
-			// cannot be exported
-		}
-		else if (ts.isFunctionDeclaration(node) && node.name) {
-			let symbol = checker.getSymbolAtLocation(node.name);
-			if (symbol !== undefined) {
-				let item = new Function(symbol, node.name, context);
-				namespace.addItem(item);
-			}
-		}
-		else if (ts.isInterfaceDeclaration(node)) {
-			let symbol = checker.getSymbolAtLocation(node.name);
-			if (symbol !== undefined) {
-				let item = new Interface(symbol, node.name, [], context);
-				namespace.addItem(item);
-			}
-		}
-		else if (ts.isTypeAliasDeclaration(node) && node.name) {
-			let symbol = checker.getSymbolAtLocation(node.name);
-			if (symbol !== undefined) {
-				let item = new TypeAlias(symbol, node.name, context);
-				namespace.addItem(item);
-			}
-		}
-		else if (ts.isNamespaceExportDeclaration(node)) {
-			//console.log("visiting namespace EXPORT "+node.name.getText());
-		}
-        else if (ts.isModuleDeclaration(node)) {
-			// This is a namespace, visit its children
-			let nameNode = node.name;
-			if (!ts.isStringLiteral(nameNode)) {
-				let child = new Namespace(namespace, nameNode.getText());
-				ts.forEachChild(node, (n) => visit(n,child));
-				namespace.addItem(child);
-			}
-		}
-		else if (ts.isVariableStatement(node)) {
-			//console.log("visiting variable statement: ["+node.declarationList.declarations.map((decl) => decl.name.getText()).join(",")+"]");
-		}
-		else if (ts.isIdentifier(node)) {
-			if (prevDeclaring === true) {
-				declaring = node.text;
-			}
-		}
-		else if (node.kind == ts.SyntaxKind.DeclareKeyword) {
-			declaring = true;
-		}
-		else if (ts.isModuleBlock(node)) {
-			//if (typeof prevDeclaring === "string") {
-				//let child = new Namespace(namespace, prevDeclaring);
-				node.forEachChild((n) => visit(n,namespace));
-				//namespace.addItem(child);
-			//}
-		}
-		else {
-			console.log("visiting "+syntaxKindToName(node.kind));
-		}
-    }
+	return;
 
     /** Serialize a symbol into a json object */
     function serializeSymbol(symbol: ts.Symbol) {
@@ -835,13 +869,28 @@ function generateDocumentation(fileNames: string[], options: ts.CompilerOptions,
     }
 }
 
-let testDir = "test/pixi.js";
-//let testDir = "test/react";
-let tsconfigFile = testDir+"/tsconfig.json";
-let dtsFile = testDir+"/index.d.ts";
-let outDir = testDir+"/output";
-
-let config = readTsConfig(tsconfigFile, testDir);
-if (config) {
-	generateDocumentation([dtsFile], config.options, outDir);
+{
+	let testDir = "test/pixi.js";
+	//let testDir = "test/react";
+	let tsconfigFile = testDir+"/tsconfig.json";
+	let dtsFile = testDir+"/index.d.ts";
+	let outDir = testDir+"/output";
+	
+	let config = readTsConfig(tsconfigFile, testDir);
+	if (config) {
+		dts2rs([dtsFile], config.options, outDir);
+	}
 }
+
+/*{
+	let testDir = "test/react";
+	//let testDir = "test/react";
+	let tsconfigFile = testDir+"/tsconfig.json";
+	let dtsFile = testDir+"/index.d.ts";
+	let outDir = testDir+"/output";
+	
+	let config = readTsConfig(tsconfigFile, testDir);
+	if (config) {
+		dts2rs([dtsFile], config.options, outDir);
+	}
+}*/
