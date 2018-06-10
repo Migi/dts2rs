@@ -1,0 +1,8 @@
+[package]
+name = "pixitest"
+version = "1.0.0"
+authors = ["Michiel De Muynck <michieldemuynck@gmail.com>"]
+
+[dependencies]
+pixi-js = { path = "../pixi.js/output" }
+stdweb = "0.4"

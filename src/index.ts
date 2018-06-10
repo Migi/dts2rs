@@ -797,7 +797,7 @@ interface RustifiedType {
 const AnyRustifiedType : RustifiedType = {
 	fromJsValue: (ns: Namespace, s:string) => s,
 	structName: (ns: Namespace) => "::stdweb::Value",
-	inArgPosName: (ns: Namespace) => "::stdweb::Value"
+	inArgPosName: (ns: Namespace) => "impl ::stdweb::JsSerialize"
 }
 
 const NumberRustifiedType : RustifiedType = {
@@ -1016,8 +1016,11 @@ function collectMembers(obj: ClassOrInterface, context: Context) {
 			memType.getCallSignatures().forEach((callSig) => {
 				obj.addMethod(new Function(escapeRustName(memSym.name), collectSignature(callSig, obj.namespace, context)), context);
 			});
+			console.log(memSym.name+": "+memSym.flags);
 			if (memSym.flags & ts.SymbolFlags.Property) {
-				obj.properties.push(new Variable(memSym.name, escapeRustName(memSym.name), collectType(memType, context)));
+				let isOptional = memSym.flags & ts.SymbolFlags.Optional;
+				let memRustType = (isOptional ? collectType(memType, context) : collectType(memType, context));
+				obj.properties.push(new Variable(memSym.name, escapeRustName(memSym.name), memRustType));
 			}
 		}
 	});
@@ -1290,10 +1293,10 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string)
 	outStr += "\t\t}\n";
 	outStr += "\t}\n";
 	outStr += "}\n";
-	outStr += "\n";*/
-	outStr += "#[derive(Clone,Debug)]\n";
-	outStr += "pub struct Any(::stdweb::Value);\n";
 	outStr += "\n";
+	outStr += "#[derive(Clone,Debug)]\n";
+	outStr += "pub struct Any(pub ::stdweb::Value);\n";
+	outStr += "\n";*/
 	context.rootNameSpace.emit((s) => { outStr += s+"\n" }, context);
 	
 	mkdirp.sync(path.join(outDir, "src"));
