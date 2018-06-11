@@ -35,9 +35,9 @@ function syntaxKindToName(kind: ts.SyntaxKind) {
 function indentAdder(writeln: (s:string) => void) : (s:string) => void {
 	return (s) => {
 		if (s.length == 0) {
-			return s;
+			writeln("");
 		} else {
-			return writeln("\t"+s);
+			writeln("\t"+s);
 		}
 	};
 }
@@ -155,7 +155,7 @@ class ClassOrInterface {
 		} else {
 			let result : Function[] = [];
 			forEachFunctionWithUniqueNames(this.methods, (f, uniqueName) => {
-				result.push(new Function(uniqueName, f.signature));
+				result.push(new Function(uniqueName, f.signature, f.docs));
 			});
 			this._resolvedMethods = result;
 			return result;
@@ -194,13 +194,41 @@ class Class extends ClassOrInterface {
 		this.rustifiedType = {
 			fromJsValue: (ns: Namespace, s:string) => ns.getRustPathTo(this.namespace, this.rustName)+"(__js_value_into_reference("+s+"))",
 			structName: (ns: Namespace) => ns.getRustPathTo(this.namespace, this.rustName),
-			inArgPosName: (ns: Namespace) => "impl "+ns.getRustPathTo(this.namespace, this.superClassOfTrait)
+			inArgPosName: (ns: Namespace) => "impl "+ns.getRustPathTo(this.namespace, this.superClassOfTrait),
+			isNullable: false
 		}
+
+		this.constructors = [];
+		this._resolvedConstructors = [];
 	}
 
 	superClassOfTrait: string;
 	superClass: Class | undefined;
 	rustifiedType: RustifiedType;
+	private constructors: Function[];
+	_resolvedConstructors: Function[];
+
+	addConstructor(f:Function, context: Context) {
+		for (let existingF of this.constructors) {
+			if (f.isSameAs(existingF, context)) {
+				return;
+			}
+		}
+		this.constructors.push(f);
+	}
+
+	getResolvedConstructors() : Function[] {
+		if (this._resolvedConstructors.length == this.constructors.length) {
+			return this._resolvedConstructors;
+		} else {
+			let result : Function[] = [];
+			forEachFunctionWithUniqueNames(this.constructors, (f, uniqueName) => {
+				result.push(new Function(uniqueName, f.signature, f.docs));
+			});
+			this._resolvedConstructors = result;
+			return result;
+		}
+	}
 
 	forEachSuperClass(cb: (i:Class) => void) {
 		if (this.superClass !== undefined) {
@@ -246,7 +274,7 @@ class Class extends ClassOrInterface {
 		});*/
 		writeln("{");
 		this.getResolvedMethods().forEach((method) => {
-			method.emit(indentAdder(writeln), true, true, this.namespace, context);
+			method.emit(indentAdder(writeln), true, false, true, this.namespace, context);
 		});
 		this.properties.forEach((prop) => {
 			writeln("\tfn __get_"+prop.rustName+"(&self) -> "+prop.type.structName(this.namespace)+" {");
@@ -284,6 +312,23 @@ class Class extends ClassOrInterface {
 			method.emit(indentAdder(writeln), true, true, this.namespace, context);
 		});*/
 		writeln("}");
+
+		writeln("pub struct __"+this.rustName+"_Prototype(::stdweb::Reference);");
+		writeln("");
+		writeln("impl __"+this.rustName+"_Prototype {");
+		writeln("\tpub fn __init_from_js_value(__value: ::stdweb::Value) -> Result<Self, &'static str> {");
+		writeln("\t\tmatch __value {");
+		writeln("\t\t\t::stdweb::Value::Reference(__js_ref) => Ok(__"+this.rustName+"_Prototype(__js_ref)),");
+		writeln("\t\t\t_ => Err(\"Failed to initialize prototype of class "+this.rustName+" in "+this.namespace.toStringFull()+": the given stdweb::Value is not a reference.\")");
+		writeln("\t\t}");
+		writeln("\t}");
+		writeln("");
+		this.getResolvedConstructors().forEach((constructor) => {
+			constructor.emit(indentAdder(writeln), false, true, true, this.namespace, context);
+		});
+		writeln("}");
+		writeln("");
+		emitImplJsSerializeForType("__"+this.rustName+"_Prototype", writeln);
 
 		/*let members = this.symbol.members;
 		if (members !== undefined) {
@@ -399,6 +444,9 @@ class Class extends ClassOrInterface {
 			}
 		});*/
 	}
+
+	emitStatics(writeln: (s:string) => void, context: Context) : void {
+	}
 }
 
 class Interface extends ClassOrInterface {
@@ -409,7 +457,8 @@ class Interface extends ClassOrInterface {
 		this.rustifiedType = {
 			fromJsValue: (ns: Namespace, s:string) => ns.getRustPathTo(this.namespace, this.rustName)+"(__js_value_into_reference("+s+"))",
 			structName: (ns: Namespace) => ns.getRustPathTo(this.namespace, this.rustName),
-			inArgPosName: (ns: Namespace) => "impl "+ns.getRustPathTo(this.namespace, this.implementsTrait)
+			inArgPosName: (ns: Namespace) => "impl "+ns.getRustPathTo(this.namespace, this.implementsTrait),
+			isNullable: false
 		}
 	}
 
@@ -445,8 +494,17 @@ class Interface extends ClassOrInterface {
 		});*/
 		writeln("{");
 		this.getResolvedMethods().forEach((method) => {
-			method.emit(indentAdder(writeln), true, true, this.namespace, context);
+			method.emit(indentAdder(writeln), true, false, true, this.namespace, context);
 		})
+		this.properties.forEach((prop) => {
+			writeln("\tfn __get_"+prop.rustName+"(&self) -> "+prop.type.structName(this.namespace)+" {");
+			writeln("\t\t"+prop.type.fromJsValue(this.namespace, "js!(return @{self}."+prop.jsName+";)"));
+			writeln("\t}");
+			writeln("\tfn __set_"+prop.rustName+"(&self, "+prop.rustName+": "+prop.type.inArgPosName(this.namespace)+") {");
+			writeln("\t\tjs!(@(no_return) @{self}."+prop.jsName+" = @{"+prop.rustName+"};);");
+			writeln("\t}");
+			writeln("");
+		});
 		writeln("}");
 		writeln("");
 		emitImplJsSerializeForType(this.rustName, writeln);
@@ -458,11 +516,20 @@ class Interface extends ClassOrInterface {
 			writeln("}");
 			writeln("");
 		});
+		
+		writeln("pub struct __"+this.rustName+"_Prototype {");
+		writeln("}");
+		writeln("");
+		writeln("impl __"+this.rustName+"_Prototype {}");
+		writeln("");
+	}
+
+	emitStatics(writeln: (s:string) => void, context: Context) : void {
 	}
 }
 
 class Variable {
-	constructor(public jsName: string, public rustName: string, public type: RustifiedType) {}
+	constructor(public jsName: string, public jsType: string, public rustName: string, public type: RustifiedType, public isOptional: boolean) {}
 
 	isSameAs(other: Variable, context: Context) : boolean {
 		return this.rustName == other.rustName && rustifiedTypesAreSame(this.type, other.type, context);
@@ -470,7 +537,7 @@ class Variable {
 }
 
 class Signature {
-	constructor(public args: Variable[], public returnType: RustifiedType, public namespace: Namespace) {}
+	constructor(public args: Variable[], public returnType: RustifiedType, public returnJsType: string, public namespace: Namespace) {}
 
 	isSameAs(other: Signature, context: Context) : boolean {
 		if (this.namespace != other.namespace) {
@@ -491,8 +558,18 @@ class Signature {
 	}
 }
 
+function emitDocs(writeln: (s:string) => void, docs: ts.SymbolDisplayPart[]) {
+	if (docs.length > 0) {
+		let str = ts.displayPartsToString(docs);
+		let lines = str.split("\n");
+		forEach(lines, (line) => {
+			writeln("/// "+line);
+		});
+	}
+}
+
 class Function {
-	constructor(public rustName: string, public signature: Signature) {}
+	constructor(public rustName: string, public signature: Signature, public docs: ts.SymbolDisplayPart[]) {}
 
 	isSameAs(other: Function, context: Context) : boolean {
 		if (this.rustName != other.rustName) {
@@ -504,12 +581,44 @@ class Function {
 		return true;
 	}
 	
-
-	emit(writeln: (s:string) => void, isMethod: boolean, withImplementation: boolean, namespace: Namespace, context: Context) {
+	emit(writeln: (s:string) => void, isMethod: boolean, isConstructor: boolean, withImplementation: boolean, namespace: Namespace, context: Context) {
+		let shouldPrintDocs = (this.docs.length > 0 || this.signature.args.length > 0 || !rustifiedTypesAreSame(this.signature.returnType, UnitRustifiedType, context));
+		if (shouldPrintDocs) {
+			writeln("/**");
+		}
+		let shouldPrintParamsAndReturn = shouldPrintDocs;
+		if (this.docs.length > 0) {
+			let str = ts.displayPartsToString(this.docs);
+			let containsParamDocs = (str.indexOf("@param") >= 0 || str.indexOf("@returns") >= 0);
+			let lines = str.split("\n");
+			for (let line of lines) {
+				writeln(" * "+line);
+			}
+			if (!containsParamDocs) {
+				writeln(" *");
+				shouldPrintParamsAndReturn = true;
+			}
+		}
+		if (shouldPrintParamsAndReturn) {
+			if (this.signature.args.length > 0) {
+				writeln(" * Parameters:");
+			}
+			for (let arg of this.signature.args) {
+				writeln(" *  - "+arg.jsName+(arg.isOptional ? "?":"")+" : "+arg.jsType);
+			}
+			if (!rustifiedTypesAreSame(this.signature.returnType, UnitRustifiedType, context)) {
+				writeln(" * Returns: "+this.signature.returnJsType);
+			}
+			writeln(" */");
+		}
 		{
-			let line = "fn "+this.rustName+"(";
+			let line = "";
+			if (isConstructor) {
+				line += "pub ";
+			}
+			line += "fn "+this.rustName+"(";
 			let isFirstParam = true;
-			if (isMethod) {
+			if (isMethod || isConstructor) {
 				line += "&self";
 				isFirstParam = false;
 			}
@@ -532,9 +641,12 @@ class Function {
 			let line = "\t";
 			let jsLine = "js!(";
 			if (isMethod) {
-				jsLine += "@{self}.";
+				jsLine += "@{self}."+this.rustName+"(";
+			} else if (isConstructor) {
+				jsLine += "new @{self}(";
+			} else {
+				jsLine += this.rustName+"(";
 			}
-			jsLine += this.rustName+"(";
 			let isFirstParam = true;
 			this.signature.args.forEach((arg) => {
 				if (!isFirstParam) {
@@ -553,32 +665,68 @@ class Function {
 }
 
 class Namespace {
-	constructor(public parent: Namespace | undefined, public name: string) {
-		if (this.name === "" && this.parent !== undefined) {
+	constructor(public parent: Namespace | undefined, public jsName: string) {
+		if (this.jsName === "" && this.parent !== undefined) {
 			console.error("Namespace without name found that isn't the root namespace!");
 			console.error("Parent: "+this.parent.toStringFull());
 			throw "terminating...";
 		}
-		this.rustName = escapeRustName(this.name);
+		this.rustName = escapeRustName(this.jsName);
 		this.subNamespaces = {};
 		this.classes = {};
 		this.interfaces = {};
-		this.functions = {};
+		this.functions = [];
+		this.resolvedFunctions = [];
 	}
 
 	rustName: string;
 	subNamespaces: {[name:string]: Namespace};
 	classes: {[name:string]: Class};
 	interfaces: {[name:string]: Interface};
-	functions: {[name:string]: Function};
+	private functions: Function[];
+	private resolvedFunctions: Function[];
 
 	toStringFull() : string {
-		if (this.name == "") {
+		function rec(ns:Namespace) : string {
+			if (ns.parent === undefined) {
+				return ns.jsName;
+			} else {
+				let r = rec(ns.parent);
+				if (r == "") {
+					return ns.jsName;
+				} else {
+					return r + "::" + ns.jsName;
+				}
+			}
+		}
+
+		let r = rec(this);
+		if (r == "") {
 			return "the root namespace";
-		} else if (this.parent === undefined) {
-			return "namespace "+this.name;
 		} else {
-			return this.parent.toStringFull() + "::" + this.name;
+			return "namespace "+r;
+		}
+	}
+
+	addFunction(f:Function, context: Context) {
+		for (let existingF of this.functions) {
+			if (f.isSameAs(existingF, context)) {
+				return;
+			}
+		}
+		this.functions.push(f);
+	}
+
+	getResolvedFunctions() : Function[] {
+		if (this.resolvedFunctions.length == this.functions.length) {
+			return this.resolvedFunctions;
+		} else {
+			let result : Function[] = [];
+			forEachFunctionWithUniqueNames(this.functions, (f, uniqueName) => {
+				result.push(new Function(uniqueName, f.signature, f.docs));
+			});
+			this.resolvedFunctions = result;
+			return result;
 		}
 	}
 
@@ -610,11 +758,11 @@ class Namespace {
 		function rec(node: Namespace, pathSoFar: string) {
 			fromHere.set(node, pathSoFar);
 			if (node.parent !== undefined) {
-				if (node.name !== "") {
+				if (node.jsName !== "") {
 					if (pathSoFar != "") {
-						rec(node.parent, node.name + "::" + pathSoFar);
+						rec(node.parent, node.jsName + "::" + pathSoFar);
 					} else {
-						rec(node.parent, node.name);
+						rec(node.parent, node.jsName);
 					}
 				} else {
 					fromHere.set(node.parent, pathSoFar);
@@ -656,14 +804,9 @@ class Namespace {
 			writeln("pub mod "+subNS.rustName+" {");
 			writeln("\tuse super::*;");
 			writeln("");
-			subNS.emit((s) => {
-				if (s == "") {
-					writeln(s);
-				} else {
-					writeln("\t"+s);
-				}
-			}, context);
+			subNS.emit(indentAdder(writeln), context);
 			writeln("}");
+			writeln("");
 		});
 
 		forEachKeyValueInObject(this.classes, (className, theClass) => {
@@ -673,6 +816,149 @@ class Namespace {
 		forEachKeyValueInObject(this.interfaces, (className, theInterface) => {
 			theInterface.emit(writeln, context);
 		});
+
+		writeln("pub struct __EagerNamespace_"+this.rustName+" {");
+		writeln("\t__js_ref: ::stdweb::Reference,");
+		forEachKeyValueInObject(this.subNamespaces, (subNsName, subNS) => {
+			writeln("\tpub "+subNS.rustName+": "+subNS.rustName+"::__EagerNamespace_"+subNS.rustName+",");
+		});
+		forEachKeyValueInObject(this.classes, (className, theClass) => {
+			writeln("\tpub "+theClass.rustName+": __"+theClass.rustName+"_Prototype,");
+		});
+		forEachKeyValueInObject(this.interfaces, (className, theInterface) => {
+			writeln("\tpub "+theInterface.rustName+": __"+theInterface.rustName+"_Prototype,");
+		});
+		writeln("}");
+		writeln("");
+		writeln("impl __EagerNamespace_"+this.rustName+" {");
+		writeln("\tpub fn __init_from_js_value(__value: ::stdweb::Value) -> Result<Self, &'static str> {");
+		writeln("\t\tmatch __value {");
+		writeln("\t\t\t::stdweb::Value::Reference(ref __js_ref) => Ok(Self {");
+		writeln("\t\t\t\t__js_ref: __js_ref.clone(),");
+		forEachKeyValueInObject(this.subNamespaces, (subNsName, subNS) => {
+			writeln("\t\t\t\t"+subNS.rustName+": "+subNS.rustName+"::__EagerNamespace_"+subNS.rustName+"::__init_from_js_value(js!(@{__js_ref}."+subNS.jsName+"))?,");
+		});
+		forEachKeyValueInObject(this.classes, (className, theClass) => {
+			writeln("\t\t\t\t"+theClass.rustName+": __"+theClass.rustName+"_Prototype::__init_from_js_value(js!(@{__js_ref}."+theClass.symbol.name+"))?,");
+		});
+		forEachKeyValueInObject(this.interfaces, (className, theInterface) => {
+			writeln("\t\t\t\t"+theInterface.rustName+": __"+theInterface.rustName+"_Prototype {},");
+		});
+		writeln("\t\t\t}),");
+		writeln("\t\t\t_ => Err(\"Failed to initialize "+this.toStringFull()+": the given stdweb::Value is not a reference.\")");
+		writeln("\t\t}");
+		writeln("\t}");
+		writeln("}");
+		writeln("");
+
+		this.getResolvedFunctions().forEach((f) => {
+			f.emit(writeln, false, false, true, this, context);
+		});
+
+		/*let hasAtLeastOneClass = false;
+		forEachKeyValueInObject(this.classes, (className, theClass) => {
+			hasAtLeastOneClass = true;
+		});
+		if (hasAtLeastOneClass) {
+			writeln("pub mod class {");
+			writeln("\tuse super::*;");
+			writeln("");
+			forEachKeyValueInObject(this.classes, (className, theClass) => {
+				theClass.emitStatics(indentAdder(writeln), context);
+			});
+			writeln("}");
+			writeln("");
+		}
+
+		let hasAtLeastOneInterface = false;
+		forEachKeyValueInObject(this.interfaces, (className, theInterface) => {
+			hasAtLeastOneInterface = true;
+		});
+		if (hasAtLeastOneInterface) {
+			writeln("pub mod interface {");
+			writeln("\tuse super::*;");
+			writeln("");
+			forEachKeyValueInObject(this.interfaces, (className, theInterface) => {
+				theInterface.emitStatics(indentAdder(writeln), context);
+			});
+			writeln("}");
+			writeln("");
+		}*/
+	}
+
+	emitStatics(writeln: (s:string) => void, context: Context) {
+		/*writeln("pub struct EagerNamespace {");
+		writeln("\t__js_ref: ::stdweb::Reference,");
+		forEachKeyValueInObject(this.subNamespaces, (subNsName, subNS) => {
+			writeln("\tpub "+subNS.rustName+": "+subNS.rustName+"::EagerNamespace,");
+		});
+		forEachKeyValueInObject(this.classes, (className, theClass) => {
+			writeln("\tpub "+theClass.rustName+": class::"+theClass.rustName+",");
+		});
+		forEachKeyValueInObject(this.interfaces, (className, theInterface) => {
+			writeln("\tpub "+theInterface.rustName+": interface::"+theInterface.rustName+",");
+		});
+		writeln("}");
+		writeln("");
+		writeln("impl EagerNamespace {");
+		writeln("\tpub fn __init_from_js_value(__value: ::stdweb::Value) -> Result<Self, &'static str> {");
+		writeln("\t\tmatch __value {");
+		writeln("\t\t\t::stdweb::Value::Reference(ref __js_ref) => Ok(Self {");
+		writeln("\t\t\t\t__js_ref: __js_ref.clone(),");
+		forEachKeyValueInObject(this.subNamespaces, (subNsName, subNS) => {
+			writeln("\t\t\t\t"+subNS.rustName+": "+subNS.rustName+"::EagerNamespace::__init_from_js_value(js!(@{__js_ref}."+subNS.jsName+"))?,");
+		});
+		forEachKeyValueInObject(this.classes, (className, theClass) => {
+			writeln("\t\t\t\t"+theClass.rustName+": class::"+theClass.rustName+"::__init_from_js_value(js!(@{__js_ref}."+theClass.symbol.name+"))?,");
+		});
+		forEachKeyValueInObject(this.interfaces, (className, theInterface) => {
+			writeln("\t\t\t\t"+theInterface.rustName+": interface::"+theInterface.rustName+"::__init_from_js_value(js!(@{__js_ref}."+theInterface.symbol.name+"))?,");
+		});
+		writeln("\t\t\t}),");
+		writeln("\t\t\t_ => Err(\"Failed to initialize "+this.toStringFull()+": the given stdweb::Value is not a reference.\")");
+		writeln("\t\t}");
+		writeln("\t}");
+		writeln("}");
+		writeln("");
+
+		forEachKeyValueInObject(this.subNamespaces, (subNsName, subNS) => {
+			writeln("pub mod "+subNS.rustName+" {");
+			writeln("\tuse super::*;");
+			writeln("");
+			subNS.emitStatics(indentAdder(writeln), context);
+			writeln("}");
+			writeln("");
+		});
+
+		let hasAtLeastOneClass = false;
+		forEachKeyValueInObject(this.classes, (className, theClass) => {
+			hasAtLeastOneClass = true;
+		});
+		if (hasAtLeastOneClass) {
+			writeln("pub mod class {");
+			writeln("\tuse super::*;");
+			writeln("");
+			forEachKeyValueInObject(this.classes, (className, theClass) => {
+				theClass.emitStatics(indentAdder(writeln), context);
+			});
+			writeln("}");
+			writeln("");
+		}
+
+		let hasAtLeastOneInterface = false;
+		forEachKeyValueInObject(this.interfaces, (className, theInterface) => {
+			hasAtLeastOneInterface = true;
+		});
+		if (hasAtLeastOneInterface) {
+			writeln("pub mod interface {");
+			writeln("\tuse super::*;");
+			writeln("");
+			forEachKeyValueInObject(this.interfaces, (className, theInterface) => {
+				theInterface.emitStatics(indentAdder(writeln), context);
+			});
+			writeln("}");
+			writeln("");
+		}*/
 	}
 }
 
@@ -781,6 +1067,7 @@ let typeToStdwebTypeMap : {[key:string]: RustifiedType} = {};
 			fromJsValue: (ns: Namespace, s:string) => "unsafe {<::stdweb::web::"+val+" as ::stdweb::ReferenceType>::from_reference_unchecked(__js_value_into_reference("+s+"))}",
 			structName: (ns: Namespace) => "::stdweb::web::"+val,
 			inArgPosName: (ns: Namespace) => "::stdweb::web::"+val,
+			isNullable: false
 		};
 	}
 
@@ -791,58 +1078,66 @@ let typeToStdwebTypeMap : {[key:string]: RustifiedType} = {};
 interface RustifiedType {
 	fromJsValue: (ns: Namespace, jsCode: string) => string,
 	structName: (ns: Namespace) => string,
-	inArgPosName: (ns: Namespace) => string
+	inArgPosName: (ns: Namespace) => string,
+	isNullable: boolean,
 }
 
 const AnyRustifiedType : RustifiedType = {
 	fromJsValue: (ns: Namespace, s:string) => s,
 	structName: (ns: Namespace) => "::stdweb::Value",
-	inArgPosName: (ns: Namespace) => "impl ::stdweb::JsSerialize"
+	inArgPosName: (ns: Namespace) => "impl ::stdweb::JsSerialize",
+	isNullable: true,
 }
 
 const NumberRustifiedType : RustifiedType = {
 	fromJsValue: (ns: Namespace, s:string) => "__js_value_into_number("+s+")",
 	structName: (ns: Namespace) => "f64",
-	inArgPosName: (ns: Namespace) => "f64"
+	inArgPosName: (ns: Namespace) => "f64",
+	isNullable: false,
 }
 
 const StringRustifiedType : RustifiedType = {
 	fromJsValue: (ns: Namespace, s:string) => "__js_value_into_string("+s+")",
 	structName: (ns: Namespace) => "String",
-	inArgPosName: (ns: Namespace) => "String"
+	inArgPosName: (ns: Namespace) => "String",
+	isNullable: false,
 }
 
 const BoolRustifiedType : RustifiedType = {
 	fromJsValue: (ns: Namespace, s:string) => "__js_value_into_bool("+s+")",
 	structName: (ns: Namespace) => "bool",
-	inArgPosName: (ns: Namespace) => "bool"
+	inArgPosName: (ns: Namespace) => "bool",
+	isNullable: false,
 }
 
 const SymbolRustifiedType : RustifiedType = {
 	fromJsValue: (ns: Namespace, s:string) => "__js_value_into_symbol("+s+")",
 	structName: (ns: Namespace) => "::stdweb::Symbol",
 	inArgPosName: (ns: Namespace) => "::stdweb::Symbol",
+	isNullable: false,
 }
 
 const UndefinedRustifiedType : RustifiedType = {
 	fromJsValue: (ns: Namespace, s:string) => "__js_value_into_undefined("+s+")",
 	structName: (ns: Namespace) => "::stdweb::Undefined",
 	inArgPosName: (ns: Namespace) => "::stdweb::Undefined",
+	isNullable: true,
 }
 
 const NullRustifiedType : RustifiedType = {
 	fromJsValue: (ns: Namespace, s:string) => "__js_value_into_null("+s+")",
 	structName: (ns: Namespace) => "::stdweb::Null",
 	inArgPosName: (ns: Namespace) => "::stdweb::Null",
+	isNullable: false, // it's handled as a special case in makeRustifiedTypeOptional()
 }
 
 const UnitRustifiedType : RustifiedType = {
 	fromJsValue: (ns: Namespace, s:string) => s+";",
 	structName: (ns: Namespace) => "()",
 	inArgPosName: (ns: Namespace) => "()",
+	isNullable: false, // it's handled as a special case in makeRustifiedTypeOptional()
 }
 
-let collectedTypes = new Map<ts.Type, RustifiedType>();
 
 function rustifyTypeUsingOnlyFlags(type:ts.Type) : RustifiedType {
 	let f = type.flags;
@@ -899,6 +1194,32 @@ function rustifyTypeUsingOnlyFlags(type:ts.Type) : RustifiedType {
 	}
 }
 
+function makeRustifiedTypeOptional(type: RustifiedType, context:Context) : RustifiedType {
+	if (type.isNullable) {
+		return type;
+	} else if (rustifiedTypesAreSame(type, UnitRustifiedType, context)) {
+		// does an optional void even exist?
+		return UnitRustifiedType;
+	} else if (rustifiedTypesAreSame(type, NullRustifiedType, context)) {
+		// so this is the type "undefined | null". I guess null should map to Some(Null) in this case but I seriously doubt if anyone uses types like this.
+		return {
+			fromJsValue: (ns: Namespace, s:string) => "match "+s+" { ::stdweb::Value::Undefined => None, ___other => Some("+type.fromJsValue(ns, "___other")+") }",
+			structName: (ns: Namespace) => "Option<"+type.structName(ns)+">",
+			inArgPosName: (ns: Namespace) => "Option<"+type.inArgPosName(ns)+">",
+			isNullable: true
+		};
+	}
+	// in all other cases I'll let null map to None.
+	return {
+		fromJsValue: (ns: Namespace, s:string) => "match "+s+" { ::stdweb::Value::Undefined | ::stdweb::Value::Null => None, ___other => Some("+type.fromJsValue(ns, "___other")+") }",
+		structName: (ns: Namespace) => "Option<"+type.structName(ns)+">",
+		inArgPosName: (ns: Namespace) => "Option<"+type.inArgPosName(ns)+">",
+		isNullable: true
+	};
+}
+
+let collectedTypes = new Map<ts.Type, RustifiedType>();
+
 function collectType(type:ts.Type, context:Context) : RustifiedType {
 	let cached = collectedTypes.get(type);
 	if (cached !== undefined) {
@@ -942,31 +1263,42 @@ function collectType(type:ts.Type, context:Context) : RustifiedType {
 }
 
 function collectSymbolAndType(symbol: ts.Symbol, type: ts.Type, context:Context) : RustifiedType {
-	let shouldOutputType = false;
-	let decls = symbol.getDeclarations();
-	if (decls !== undefined) {
-		for (const decl of decls) {
-			let fileName = decl.getSourceFile().fileName;
-			if (context.sourceFiles.indexOf(fileName) >= 0) {
-				shouldOutputType = true;
-			} else {
-				let qualifiedName = context.checker.getFullyQualifiedName(symbol);
-				if (typeToStdwebTypeMap.hasOwnProperty(qualifiedName)) {
-					return typeToStdwebTypeMap[qualifiedName];
+	function impl() : RustifiedType {
+		let shouldOutputType = false;
+		let decls = symbol.getDeclarations();
+		if (decls !== undefined) {
+			for (const decl of decls) {
+				let fileName = decl.getSourceFile().fileName;
+				if (context.sourceFiles.indexOf(fileName) >= 0) {
+					shouldOutputType = true;
+				} else {
+					let qualifiedName = context.checker.getFullyQualifiedName(symbol);
+					if (typeToStdwebTypeMap.hasOwnProperty(qualifiedName)) {
+						return typeToStdwebTypeMap[qualifiedName];
+					}
 				}
 			}
 		}
-	}
 
-	if (shouldOutputType) {
-		if (type.isClass()) {
-			return collectClass(symbol, type, context).rustifiedType;
-		} else if (type.isClassOrInterface()) {
-			return collectInterface(symbol, type, context).rustifiedType;
+		if (shouldOutputType) {
+			if (type.isClass()) {
+				return collectClass(symbol, type, context).rustifiedType;
+			} else if (type.isClassOrInterface()) {
+				return collectInterface(symbol, type, context).rustifiedType;
+			} else if (symbol.flags & ts.SymbolFlags.Function) {
+				return collectFunction(symbol, type, context);
+			}
 		}
+
+		return rustifyTypeUsingOnlyFlags(type);
 	}
 
-	return rustifyTypeUsingOnlyFlags(type);
+	let result = impl();
+	let isOptional = symbol.flags & ts.SymbolFlags.Optional;
+	if (isOptional) {
+		result = makeRustifiedTypeOptional(result, context);
+	}
+	return result;
 }
 
 function collectSymbolEnclosingNamespaces(symbol:ts.Symbol, context:Context) : [Namespace,string] {
@@ -995,9 +1327,38 @@ function collectSignature(signature: ts.Signature, ns: Namespace, context: Conte
 	let retType = collectType(signature.getReturnType(), context);
 	let args = signature.parameters.map((param) => {
 		let type = context.checker.getTypeOfSymbolAtLocation(param, param.valueDeclaration!);
-		return new Variable(param.name, escapeRustName(param.name), collectType(type, context));
+		let rustType = collectType(type, context);
+		let isOptional = false;
+		forEach(param.declarations, (paramDecl) => {
+			if (ts.isParameter(paramDecl) && context.checker.isOptionalParameter(paramDecl)) {
+				isOptional = true;
+			}
+		});
+		if (isOptional) {
+			rustType = makeRustifiedTypeOptional(rustType, context);
+		}
+		return new Variable(param.name, context.checker.typeToString(type), escapeRustName(param.name), rustType, isOptional);
 	});
-	return new Signature(args, retType, ns);
+	return new Signature(args, retType, context.checker.typeToString(signature.getReturnType()), ns);
+}
+
+function collectFunction(symbol:ts.Symbol, type:ts.Type, context:Context) : RustifiedType {
+	let [ns, name] = collectSymbolEnclosingNamespaces(symbol, context);
+
+	let docs = symbol.getDocumentationComment(context.checker);
+
+	//let result : Function[] = [];
+
+	forEach(symbol.declarations, (decl) => {
+		let functionType = context.checker.getTypeOfSymbolAtLocation(symbol, decl);
+		forEach(functionType.getCallSignatures(), (callSig) => {
+			let f = new Function(escapeRustName(symbol.name), collectSignature(callSig, ns, context), docs);
+			ns.addFunction(f, context);
+			//result.push(f);
+		});
+	});
+
+	return AnyRustifiedType;
 }
 
 function collectMembers(obj: ClassOrInterface, context: Context) {
@@ -1014,13 +1375,15 @@ function collectMembers(obj: ClassOrInterface, context: Context) {
 		if (!isPrivate) {
 			let memType = context.checker.getTypeOfSymbolAtLocation(memSym, memSym.valueDeclaration!);
 			memType.getCallSignatures().forEach((callSig) => {
-				obj.addMethod(new Function(escapeRustName(memSym.name), collectSignature(callSig, obj.namespace, context)), context);
+				obj.addMethod(new Function(escapeRustName(memSym.name), collectSignature(callSig, obj.namespace, context), callSig.getDocumentationComment(context.checker)), context);
 			});
-			console.log(memSym.name+": "+memSym.flags);
 			if (memSym.flags & ts.SymbolFlags.Property) {
-				let isOptional = memSym.flags & ts.SymbolFlags.Optional;
-				let memRustType = (isOptional ? collectType(memType, context) : collectType(memType, context));
-				obj.properties.push(new Variable(memSym.name, escapeRustName(memSym.name), memRustType));
+				let memRustType = collectType(memType, context);
+				let isOptional = ((memSym.flags & ts.SymbolFlags.Optional) != 0);
+				if (isOptional) {
+					memRustType = makeRustifiedTypeOptional(memRustType, context);
+				}
+				obj.properties.push(new Variable(memSym.name, context.checker.typeToString(memType), escapeRustName(memSym.name), memRustType, isOptional));
 			}
 		}
 	});
@@ -1052,24 +1415,33 @@ function collectClass(symbol:ts.Symbol, type:ts.InterfaceType, context:Context) 
 		}
 	});
 
-	// the above code doesn't find the classes interfaces, so do it manually
+	// the above code doesn't find the classes interfaces or constructors, so do it manually
 	forEach(symbol.declarations, (decl) => {
-		if (ts.isClassDeclaration(decl)) {
-			forEach(decl.heritageClauses, (her) => {
-				if (her.token == ts.SyntaxKind.ImplementsKeyword) {
-					forEach(her.types, (type) => {
-						let implType = context.checker.getTypeAtLocation(type);
-						let implSym = implType.symbol;
-						if (implSym !== undefined) {
-							if (implType.isClassOrInterface()) {
-								let i = collectInterface(implSym, implType, context);
-								result.pushDirectImpl(i);
-							}
-						}
-					});
-				}
-			});
+		if (!ts.isClassDeclaration(decl)) {
+			return;
 		}
+		forEach(decl.heritageClauses, (her) => {
+			if (her.token == ts.SyntaxKind.ImplementsKeyword) {
+				forEach(her.types, (type) => {
+					let implType = context.checker.getTypeAtLocation(type);
+					let implSym = implType.symbol;
+					if (implSym !== undefined) {
+						if (implType.isClassOrInterface()) {
+							let i = collectInterface(implSym, implType, context);
+							result.pushDirectImpl(i);
+						}
+					}
+				});
+			}
+			let declName = decl.name;
+			if (declName !== undefined) {
+				let declNameType = context.checker.getTypeOfSymbolAtLocation(result.symbol, declName);
+				let constructors = declNameType.getConstructSignatures();
+				constructors.forEach((constructor) => {
+					result.addConstructor(new Function("new", collectSignature(constructor, result.namespace, context), constructor.getDocumentationComment(context.checker)), context);
+				});
+			}
+		});
 	});
 
 	collectMembers(result, context);
@@ -1298,6 +1670,11 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string)
 	outStr += "pub struct Any(pub ::stdweb::Value);\n";
 	outStr += "\n";*/
 	context.rootNameSpace.emit((s) => { outStr += s+"\n" }, context);
+
+	outStr += "pub mod __statics {\n";
+	outStr += "\tuse super::*;\n"
+	context.rootNameSpace.emitStatics(indentAdder((s) => { outStr += s+"\n" }), context);
+	outStr += "}\n";
 	
 	mkdirp.sync(path.join(outDir, "src"));
 	
