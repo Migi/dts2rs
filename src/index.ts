@@ -1680,8 +1680,8 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string)
 		closures: []
 	};
 
-	let modules = checker.getAmbientModules();
-	modules.forEach((m) => {
+	let ambientModules : ts.Symbol[] = [];
+	checker.getAmbientModules().forEach((m) => {
 		let shouldExport = false;
 		forEach(m.getDeclarations(), (mDecl) => {
 			let fileName = mDecl.getSourceFile().fileName;
@@ -1693,9 +1693,11 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string)
 			forEach(checker.getExportsOfModule(m), (e) => {
 				collectSymbol(e, context);
 			});
+			ambientModules.push(m);
 		}
 	});
 
+	let hasTopLevelExports = false;
 	for (const sourceFile of program.getSourceFiles()) {
 		if (fileNames.indexOf(sourceFile.fileName) < 0) {
 			continue;
@@ -1704,6 +1706,7 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string)
 		if (sfSymb !== undefined) {
 			checker.getExportsOfModule(sfSymb).forEach((sfExp) => {
 				collectSymbol(sfExp, context);
+				hasTopLevelExports = true;
 			});
 		}
 	}
@@ -1834,6 +1837,11 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string)
 	outStr += "\n";*/
 
 	context.rootNameSpace.emit((s) => { outStr += s+"\n" }, context);
+
+	ambientModules.forEach((ambientMod) => {
+		let rustName = escapeRustName(ambientMod.name);
+		outStr += "pub fn __requireFromUrl__"+rustName+"(url: &str) -> ";
+	});
 
 	/*outStr += "pub mod __statics {\n";
 	outStr += "\tuse super::*;\n"
