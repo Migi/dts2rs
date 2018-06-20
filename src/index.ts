@@ -122,6 +122,18 @@ function forEachFunctionWithUniqueNames(list: Function[], cb: (f: Function, name
 	})
 }
 
+function __resolveFunctionNames(raws: Function[], resolveds: Function[]) : Function[] {
+	if (raws.length == resolveds.length) {
+		return resolveds;
+	} else {
+		resolveds.length = 0;
+		forEachFunctionWithUniqueNames(raws, (f, uniqueName) => {
+			resolveds.push(new Function(uniqueName, f.rustName, f.signature, f.docs));
+		});
+		return resolveds;
+	}
+}
+
 function rustifiedTypesAreSame(t1: RustifiedType, t2: RustifiedType, context: Context) : boolean {
 	return (t1 == t2 || t1.structName(context.rootNameSpace) == t2.structName(context.rootNameSpace));
 }
@@ -151,16 +163,7 @@ class ClassOrInterface {
 	}
 
 	getResolvedMethods() : Function[] {
-		if (this._resolvedMethods.length == this.methods.length) {
-			return this._resolvedMethods;
-		} else {
-			let result : Function[] = [];
-			forEachFunctionWithUniqueNames(this.methods, (f, uniqueName) => {
-				result.push(new Function(uniqueName, f.rustName, f.signature, f.docs));
-			});
-			this._resolvedMethods = result;
-			return result;
-		}
+		return __resolveFunctionNames(this.methods, this._resolvedMethods);
 	}
 
 	pushDirectImpl(i:Interface) {
@@ -202,6 +205,8 @@ class Class extends ClassOrInterface {
 
 		this.constructors = [];
 		this._resolvedConstructors = [];
+		this.staticFunctions = [];
+		this._resolvedStaticFunctions = [];
 	}
 
 	subClassOfTrait: string;
@@ -209,6 +214,8 @@ class Class extends ClassOrInterface {
 	rustifiedType: RustifiedType;
 	private constructors: Function[];
 	_resolvedConstructors: Function[];
+	private staticFunctions: Function[];
+	_resolvedStaticFunctions: Function[];
 
 	addConstructor(f:Function, context: Context) {
 		for (let existingF of this.constructors) {
@@ -220,16 +227,11 @@ class Class extends ClassOrInterface {
 	}
 
 	getResolvedConstructors() : Function[] {
-		if (this._resolvedConstructors.length == this.constructors.length) {
-			return this._resolvedConstructors;
-		} else {
-			let result : Function[] = [];
-			forEachFunctionWithUniqueNames(this.constructors, (f, uniqueName) => {
-				result.push(new Function(uniqueName, f.rustName, f.signature, f.docs));
-			});
-			this._resolvedConstructors = result;
-			return result;
-		}
+		return __resolveFunctionNames(this.constructors, this._resolvedConstructors);
+	}
+
+	getResolvedStaticFunctions() : Function[] {
+		return __resolveFunctionNames(this.staticFunctions, this._resolvedStaticFunctions);
 	}
 
 	forEachSuperClass(cb: (i:Class) => void) {
@@ -341,6 +343,7 @@ class Class extends ClassOrInterface {
 			method.emit(indentAdder(writeln), true, true, this.namespace, context);
 		});*/
 		writeln("}");
+		writeln("");
 
 		writeln("pub struct __"+this.rustName+"_Prototype(::stdweb::Reference);");
 		writeln("");
@@ -350,6 +353,10 @@ class Class extends ClassOrInterface {
 		writeln("\t\t\t::stdweb::Value::Reference(__js_ref) => Ok(__"+this.rustName+"_Prototype(__js_ref)),");
 		writeln("\t\t\t_ => Err(\"Failed to initialize prototype of class "+this.rustName+" in "+this.namespace.toStringFull()+": the given stdweb::Value is not a reference.\")");
 		writeln("\t\t}");
+		writeln("\t}");
+		writeln("");
+		writeln("\tpub fn __init_from_js_ref(__js_ref: ::stdweb::Reference) -> Self {");
+		writeln("\t\t__"+this.rustName+"_Prototype(__js_ref)");
 		writeln("\t}");
 		writeln("");
 		this.getResolvedConstructors().forEach((constructor) => {
@@ -474,7 +481,8 @@ class Class extends ClassOrInterface {
 		});*/
 	}
 
-	emitStatics(writeln: (s:string) => void, context: Context) : void {
+	emitPrelude(writeln: (s:string) => void, context: Context) : void {
+		writeln("pub use "+context.rootNameSpace.getRustPathTo(this.namespace, this.subClassOfTrait)+";");
 	}
 }
 
@@ -571,7 +579,8 @@ class Interface extends ClassOrInterface {
 		writeln("");
 	}
 
-	emitStatics(writeln: (s:string) => void, context: Context) : void {
+	emitPrelude(writeln: (s:string) => void, context: Context) : void {
+		writeln("pub use "+context.rootNameSpace.getRustPathTo(this.namespace, this.implementsTrait)+";");
 	}
 }
 
@@ -643,7 +652,8 @@ function emitDocs(writeln: (s:string) => void, docs: ts.SymbolDisplayPart[]) {
 enum FunctionKind {
 	METHOD,
 	CONSTRUCTOR,
-	FREE_FUNCTION
+	FREE_FUNCTION,
+	NAMESPACED_FUNCTION
 }
 
 class Function {
@@ -719,7 +729,12 @@ class Function {
 		if (withImplementation) {
 			let line = "\t";
 			let jsLine = "js!(";
-			if (kind == FunctionKind.METHOD) {
+			if (rustifiedTypesAreSame(this.signature.returnType, UnitRustifiedType, context)) {
+				jsLine += "@(no_return) ";
+			} else {
+				jsLine += "return ";
+			}
+			if (kind == FunctionKind.METHOD || kind == FunctionKind.NAMESPACED_FUNCTION) {
 				jsLine += "@{self}."+this.rustName+"(";
 			} else if (kind == FunctionKind.CONSTRUCTOR) {
 				jsLine += "new @{self}(";
@@ -734,7 +749,7 @@ class Function {
 				isFirstParam = false;
 				jsLine += "@{"+arg.rustName+"}";
 			});
-			jsLine += "))";
+			jsLine += ");)";
 			line += this.signature.returnType.fromJsValue(namespace, jsLine);
 			writeln(line);
 			writeln("}");
@@ -896,7 +911,12 @@ class Namespace {
 			theInterface.emit(writeln, context);
 		});
 
-		writeln("pub struct __EagerNamespace_"+this.rustName+" {");
+		let eagerNamespaceRustName = "__EagerNamespace_"+this.rustName;
+		if (this.parent == undefined) {
+			eagerNamespaceRustName = "__EagerGlobals";
+		}
+
+		writeln("pub struct "+eagerNamespaceRustName+" {");
 		writeln("\t__js_ref: ::stdweb::Reference,");
 		forEachKeyValueInObject(this.subNamespaces, (subNsName, subNS) => {
 			writeln("\tpub "+subNS.rustName+": "+subNS.rustName+"::__EagerNamespace_"+subNS.rustName+",");
@@ -909,30 +929,91 @@ class Namespace {
 		});
 		writeln("}");
 		writeln("");
-		writeln("impl __EagerNamespace_"+this.rustName+" {");
+		writeln("impl "+eagerNamespaceRustName+" {");
+		writeln("\t/// Using this function is not recommended because it iterates and stores a reference to");
+		writeln("\t/// every class prototype in this namespace and all sub-namespaces. This may be slow.");
+		writeln("\t/// It also fails if there is ANY discrepancy between the TypeScript definitions and the actual object.");
 		writeln("\tpub fn __init_from_js_value(__value: ::stdweb::Value) -> Result<Self, &'static str> {");
 		writeln("\t\tmatch __value {");
-		writeln("\t\t\t::stdweb::Value::Reference(ref __js_ref) => Ok(Self {");
-		writeln("\t\t\t\t__js_ref: __js_ref.clone(),");
-		forEachKeyValueInObject(this.subNamespaces, (subNsName, subNS) => {
-			writeln("\t\t\t\t"+subNS.rustName+": "+subNS.rustName+"::__EagerNamespace_"+subNS.rustName+"::__init_from_js_value(js!(@{__js_ref}."+subNS.jsName+"))?,");
-		});
-		forEachKeyValueInObject(this.classes, (className, theClass) => {
-			writeln("\t\t\t\t"+theClass.rustName+": __"+theClass.rustName+"_Prototype::__init_from_js_value(js!(@{__js_ref}."+theClass.symbol.name+"))?,");
-		});
-		forEachKeyValueInObject(this.interfaces, (className, theInterface) => {
-			writeln("\t\t\t\t"+theInterface.rustName+": __"+theInterface.rustName+"_Prototype {},");
-		});
-		writeln("\t\t\t}),");
+		writeln("\t\t\t::stdweb::Value::Reference(ref __js_ref) => "+eagerNamespaceRustName+"::__init_from_js_ref(__js_ref),");
 		writeln("\t\t\t_ => Err(\"Failed to initialize "+this.toStringFull()+": the given stdweb::Value is not a reference.\")");
 		writeln("\t\t}");
+		writeln("\t}");
+		writeln("");
+		writeln("\t/// Using this function is not recommended because it iterates and stores a reference to");
+		writeln("\t/// every class prototype in this namespace and all sub-namespaces. This may be slow.");
+		writeln("\t/// It also fails if there is ANY discrepancy between the TypeScript definitions and the actual object.");
+		writeln("\tpub fn __init_from_js_ref(__js_ref: &::stdweb::Reference) -> Result<Self, &'static str> {");
+		writeln("\t\tOk(Self {");
+		writeln("\t\t\t__js_ref: __js_ref.clone(),");
+		forEachKeyValueInObject(this.subNamespaces, (subNsName, subNS) => {
+			writeln("\t\t\t"+subNS.rustName+": "+subNS.rustName+"::__EagerNamespace_"+subNS.rustName+"::__init_from_js_value(js!(return @{__js_ref}."+subNS.jsName+";))?,");
+		});
+		forEachKeyValueInObject(this.classes, (className, theClass) => {
+			writeln("\t\t\t"+theClass.rustName+": __"+theClass.rustName+"_Prototype::__init_from_js_value(js!(return @{__js_ref}."+theClass.symbol.name+";))?,");
+		});
+		forEachKeyValueInObject(this.interfaces, (className, theInterface) => {
+			writeln("\t\t\t"+theInterface.rustName+": __"+theInterface.rustName+"_Prototype {},");
+		});
+		writeln("\t\t})");
 		writeln("\t}");
 		writeln("}");
 		writeln("");
 
-		this.getResolvedFunctions().forEach((f) => {
-			f.emit(writeln, FunctionKind.FREE_FUNCTION, true, this, context);
+		let lazyNamespaceRustName = "__LazyNamespace_"+this.rustName;
+		if (this.parent == undefined) {
+			lazyNamespaceRustName = "__LazyGlobals";
+		}
+
+		writeln("pub struct "+lazyNamespaceRustName+"(::stdweb::Reference);");
+		writeln("");
+		writeln("impl "+lazyNamespaceRustName+" {");
+		writeln("\tpub fn __init_from_js_value(__value: ::stdweb::Value) -> Result<Self, &'static str> {");
+		writeln("\t\tmatch __value {");
+		writeln("\t\t\t::stdweb::Value::Reference(__js_ref) => Ok("+lazyNamespaceRustName+"( __js_ref )),");
+		writeln("\t\t\t_ => Err(\"Failed to initialize "+this.toStringFull()+": the given stdweb::Value is not a reference.\")");
+		writeln("\t\t}");
+		writeln("\t}");
+		writeln("");
+		writeln("\tpub fn __init_from_js_ref(__js_ref: ::stdweb::Reference) -> Self {");
+		writeln("\t\t"+lazyNamespaceRustName+"(__js_ref)");
+		writeln("\t}");
+		writeln("");
+		forEachKeyValueInObject(this.subNamespaces, (subNsName, subNS) => {
+			writeln("\tpub fn "+subNS.rustName+"(&self) -> Result<"+subNS.rustName+"::__LazyNamespace_"+subNS.rustName+", &'static str> {");
+			writeln("\t\t"+subNS.rustName+"::__LazyNamespace_"+subNS.rustName+"::__init_from_js_value(js!(return @{self}."+subNS.jsName+";))");
+			writeln("\t}");
+			writeln("");
 		});
+		forEachKeyValueInObject(this.classes, (className, theClass) => {
+			writeln("\tpub fn "+theClass.rustName+"(&self) -> Result<__"+theClass.rustName+"_Prototype, &'static str> {");
+			writeln("\t\t__"+theClass.rustName+"_Prototype::__init_from_js_value(js!(return @{self}."+theClass.symbol.name+";))");
+			writeln("\t}");
+			writeln("");
+		});
+		forEachKeyValueInObject(this.interfaces, (className, theInterface) => {
+			writeln("\tpub fn "+theInterface.rustName+"(&self) -> __"+theInterface.rustName+"_Prototype {");
+			writeln("\t\t__"+theInterface.rustName+"_Prototype {}");
+			writeln("\t}");
+			writeln("");
+		});
+		if (this.parent != undefined) {
+			this.getResolvedFunctions().forEach((f) => {
+				f.emit(indentAdder(writeln), FunctionKind.NAMESPACED_FUNCTION, true, this, context);
+			});
+		}
+		writeln("}");
+		writeln("");
+		
+		//if (this.parent != undefined) {
+			emitImplJsSerializeForType(lazyNamespaceRustName, writeln);
+		//}
+
+		if (this.parent == undefined) {
+			this.getResolvedFunctions().forEach((f) => {
+				f.emit(writeln, FunctionKind.FREE_FUNCTION, true, this, context);
+			});
+		}
 
 		/*let hasAtLeastOneClass = false;
 		forEachKeyValueInObject(this.classes, (className, theClass) => {
@@ -963,6 +1044,21 @@ class Namespace {
 			writeln("}");
 			writeln("");
 		}*/
+	}
+	
+	emitPrelude(writeln: (s:string) => void, context:Context) {
+		let checker = context.checker;
+		forEachKeyValueInObject(this.subNamespaces, (subNsName, subNS) => {
+			subNS.emitPrelude(writeln, context);
+		});
+
+		forEachKeyValueInObject(this.classes, (className, theClass) => {
+			theClass.emitPrelude(writeln, context);
+		});
+
+		forEachKeyValueInObject(this.interfaces, (className, theInterface) => {
+			theInterface.emitPrelude(writeln, context);
+		});
 	}
 
 	emitStatics(writeln: (s:string) => void, context: Context) {
@@ -1106,6 +1202,14 @@ const rustKeywords = {
 };
 
 function escapeRustName(name:string) : string {
+	while (
+		name.length > 2 && (
+			(name.charCodeAt(0) == 34 && name.charCodeAt(name.length-1) == 34) ||
+			(name.charCodeAt(0) == 39 && name.charCodeAt(name.length-1) == 39)
+		)
+	) {
+		name = name.substr(1, name.length-2);
+	}
 	if (rustKeywords.hasOwnProperty(name)) {
 		name = name+"__";
 	}
@@ -1114,6 +1218,8 @@ function escapeRustName(name:string) : string {
 		let c = name.charCodeAt(i);
 		if ((c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57 && i > 0) || c == 95) {
 			newName += String.fromCharCode(c);
+		} else if (c == 45 || c == 46) {
+			newName += "_";
 		} else {
 			newName += "_Ux"+c.toString(16);
 		}
@@ -1543,6 +1649,22 @@ function collectClass(symbol:ts.Symbol, type:ts.InterfaceType, context:Context) 
 		if (!ts.isClassDeclaration(decl)) {
 			return;
 		}
+		if (symbol.name == "Sprite") {
+			decl.members.forEach((mem) => {
+				let isStaticMethod = false;
+				if (mem.kind == ts.SyntaxKind.MethodDeclaration) {
+					forEach(mem.modifiers, (modifier) => {
+						if (modifier.kind == ts.SyntaxKind.StaticKeyword) {
+							isStaticMethod = true;
+						}
+					});
+					if (isStaticMethod) {
+						let sym = context.checker.getTypeAtLocation(mem);
+						console.log(sym);
+					}
+				}
+			});
+		}
 		forEach(decl.heritageClauses, (her) => {
 			if (her.token == ts.SyntaxKind.ImplementsKeyword) {
 				forEach(her.types, (type) => {
@@ -1556,15 +1678,15 @@ function collectClass(symbol:ts.Symbol, type:ts.InterfaceType, context:Context) 
 					}
 				});
 			}
-			let declName = decl.name;
-			if (declName !== undefined) {
-				let declNameType = context.checker.getTypeOfSymbolAtLocation(result.symbol, declName);
-				let constructors = declNameType.getConstructSignatures();
-				constructors.forEach((constructor) => {
-					result.addConstructor(new Function("new", undefined, collectSignature(constructor, context),constructor.getDocumentationComment(context.checker)), context);
-				});
-			}
 		});
+		let declName = decl.name;
+		if (declName !== undefined) {
+			let declNameType = context.checker.getTypeOfSymbolAtLocation(result.symbol, declName);
+			let constructors = declNameType.getConstructSignatures();
+			constructors.forEach((constructor) => {
+				result.addConstructor(new Function("new", undefined, collectSignature(constructor, context),constructor.getDocumentationComment(context.checker)), context);
+			});
+		}
 	});
 
 	collectMembers(result, context);
@@ -1618,8 +1740,9 @@ function emitCargoToml(packageName: string) : string {
 	"version = \"1.0.0\"\n" +
 	"authors = [\"dts2rs\"]\n" +
 	"\n" + 
-	"[dependencies]\n" +
-	"stdweb = \"0.4\"\n";
+	"[dependencies.stdweb]\n" +
+	"version = \"0.4\"\n" +
+	"features = [\"experimental_features_which_may_break_on_minor_version_bumps\"]\n";
 }
 
 function numToAbc(num:number) : string {
@@ -1666,7 +1789,7 @@ function parseFQN(fqn:string) : string[] {
 	}).map(escapeRustName);
 }
 
-function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string): void {
+function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string, packageName:string): void {
     // Build a program using the set of root file names in fileNames
 	let program = ts.createProgram(fileNames, options);
 
@@ -1724,7 +1847,7 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string)
 	outStr += "\tif let ::stdweb::Value::Undefined = val {\n";
 	outStr += "\t\t::stdweb::Undefined\n";
 	outStr += "\t} else {\n";
-	outStr += "\t\tjs!(console.error(\"ERROR: expected JS code to return undefined, but it returned: \", @{val}));\n";
+	outStr += "\t\tjs!(@(no_return) console.error(\"ERROR: expected JS code to return undefined, but it returned: \", @{val}));\n";
 	outStr += "\t\tpanic!(\"Can't unwrap JS value as undefined\")\n";
 	outStr += "\t}\n";
 	outStr += "}\n";
@@ -1733,7 +1856,7 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string)
 	outStr += "\tif let ::stdweb::Value::Null = val {\n";
 	outStr += "\t\t::stdweb::Null\n";
 	outStr += "\t} else {\n";
-	outStr += "\t\tjs!(console.error(\"ERROR: expected JS code to return null, but it returned: \", @{val}));\n";
+	outStr += "\t\tjs!(@(no_return) console.error(\"ERROR: expected JS code to return null, but it returned: \", @{val}));\n";
 	outStr += "\t\tpanic!(\"Can't unwrap JS value as null\")\n";
 	outStr += "\t}\n";
 	outStr += "}\n";
@@ -1742,7 +1865,7 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string)
 	outStr += "\tif let ::stdweb::Value::Bool(b) = val {\n";
 	outStr += "\t\tb\n";
 	outStr += "\t} else {\n";
-	outStr += "\t\tjs!(console.error(\"ERROR: expected JS code to return a bool, but it returned: \", @{val}));\n";
+	outStr += "\t\tjs!(@(no_return) console.error(\"ERROR: expected JS code to return a bool, but it returned: \", @{val}));\n";
 	outStr += "\t\tpanic!(\"Can't unwrap JS value as bool\")\n";
 	outStr += "\t}\n";
 	outStr += "}\n";
@@ -1751,7 +1874,7 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string)
 	outStr += "\tif let ::stdweb::Value::Number(n) = val {\n";
 	outStr += "\t\t::stdweb::unstable::TryInto::try_into(n).unwrap()\n";
 	outStr += "\t} else {\n";
-	outStr += "\t\tjs!(console.error(\"ERROR: expected JS code to return a number, but it returned: \", @{val}));\n";
+	outStr += "\t\tjs!(@(no_return) console.error(\"ERROR: expected JS code to return a number, but it returned: \", @{val}));\n";
 	outStr += "\t\tpanic!(\"Can't unwrap JS value as number\")\n";
 	outStr += "\t}\n";
 	outStr += "}\n";
@@ -1760,7 +1883,7 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string)
 	outStr += "\tif let ::stdweb::Value::Symbol(s) = val {\n";
 	outStr += "\t\ts\n";
 	outStr += "\t} else {\n";
-	outStr += "\t\tjs!(console.error(\"ERROR: expected JS code to return a symbol, but it returned: \", @{val}));\n";
+	outStr += "\t\tjs!(@(no_return) console.error(\"ERROR: expected JS code to return a symbol, but it returned: \", @{val}));\n";
 	outStr += "\t\tpanic!(\"Can't unwrap JS value as symbol\")\n";
 	outStr += "\t}\n";
 	outStr += "}\n";
@@ -1769,7 +1892,7 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string)
 	outStr += "\tif let ::stdweb::Value::String(s) = val {\n";
 	outStr += "\t\ts\n";
 	outStr += "\t} else {\n";
-	outStr += "\t\tjs!(console.error(\"ERROR: expected JS code to return a string, but it returned: \", @{val}));\n";
+	outStr += "\t\tjs!(@(no_return) console.error(\"ERROR: expected JS code to return a string, but it returned: \", @{val}));\n";
 	outStr += "\t\tpanic!(\"Can't unwrap JS value as string\")\n";
 	outStr += "\t}\n";
 	outStr += "}\n";
@@ -1778,7 +1901,7 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string)
 	outStr += "\tif let ::stdweb::Value::Reference(r) = val {\n";
 	outStr += "\t\tr\n";
 	outStr += "\t} else {\n";
-	outStr += "\t\tjs!(console.error(\"ERROR: expected JS code to return a reference, but it returned: \", @{val}));\n";
+	outStr += "\t\tjs!(@(no_return) console.error(\"ERROR: expected JS code to return a reference, but it returned: \", @{val}));\n";
 	outStr += "\t\tpanic!(\"Can't unwrap JS value as reference\")\n";
 	outStr += "\t}\n";
 	outStr += "}\n";
@@ -1804,14 +1927,17 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string)
 			outStr += ", arg"+(i+1)+": "+f.args[i].type.inArgPosName(context.rootNameSpace);
 		}
 		outStr += ") -> "+f.returnType.structName(context.rootNameSpace)+" {\n";
-		let jsLine = "js!(@{self}(";
+		let jsLine = "js!(return @{self}(";
+		if (rustifiedTypesAreSame(f.returnType, UnitRustifiedType, context)) {
+			jsLine = "js!(@(no_return) @{self}("
+		}
 		for (let i = 0; i < f.args.length; i++) {
 			if (i != 0) {
 				jsLine += ", ";
 			}
 			jsLine += "@{arg"+(i+1)+"}";
 		}
-		jsLine += "))";
+		jsLine += ");)";
 		outStr += "\t\t"+f.returnType.fromJsValue(context.rootNameSpace, jsLine)+"\n";
 		outStr += "\t}\n";
 		outStr += "}\n";
@@ -1836,11 +1962,27 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string)
 	outStr += "pub struct Any(pub ::stdweb::Value);\n";
 	outStr += "\n";*/
 
-	context.rootNameSpace.emit((s) => { outStr += s+"\n" }, context);
+	context.rootNameSpace.emit(writeln, context);
+
+	writeln("pub mod prelude {");
+	context.rootNameSpace.emitPrelude(indentAdder(writeln), context);
+	writeln("}");
 
 	ambientModules.forEach((ambientMod) => {
 		let rustName = escapeRustName(ambientMod.name);
-		outStr += "pub fn __requireFromUrl__"+rustName+"(url: &str) -> ";
+		writeln("/// Loads the library from the given url.");
+		writeln("/// Returns a Promise.");
+		writeln("pub fn __requireFromUrl__"+rustName+"(url: &str) -> ::stdweb::Promise {");
+		writeln("\t::stdweb::Promise::from_thenable(&__js_value_into_reference(js!(return new Promise(function (resolve, reject) {");
+		writeln("\t\tlet script = document.createElement(\"script\");");
+		writeln("\t\tscript.type = \"text/javascript\";");
+		writeln("\t\tscript.src = @{url};");
+		writeln("\t\tscript.async = true;");
+		writeln("\t\tscript.onload = resolve;");
+		writeln("\t\tscript.onerror = reject;");
+		writeln("\t\tdocument.head.appendChild(script);");
+		writeln("\t});))).unwrap()");
+		writeln("}");
 	});
 
 	/*outStr += "pub mod __statics {\n";
@@ -1850,7 +1992,7 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string)
 	
 	mkdirp.sync(path.join(outDir, "src"));
 	
-	fs.writeFile(path.join(outDir, "Cargo.toml"), emitCargoToml("pixi-js"), undefined, (err) => {
+	fs.writeFile(path.join(outDir, "Cargo.toml"), emitCargoToml(packageName), undefined, (err) => {
 		if (err) {
 			console.error("Error writing Cargo.toml: "+err.message);
 		}
@@ -1902,7 +2044,7 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string)
 	
 	let config = readTsConfig(tsconfigFile, testDir);
 	if (config) {
-		dts2rs([dtsFile], config.options, outDir);
+		dts2rs([dtsFile], config.options, outDir, "pixi-js");
 	}
 }
 
