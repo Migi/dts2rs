@@ -226,6 +226,15 @@ class Class extends ClassOrInterface {
 		this.constructors.push(f);
 	}
 
+	addStaticMethod(f:Function, context: Context) {
+		for (let existingF of this.staticFunctions) {
+			if (f.isSameAs(existingF, context)) {
+				return;
+			}
+		}
+		this.staticFunctions.push(f);
+	}
+
 	getResolvedConstructors() : Function[] {
 		return __resolveFunctionNames(this.constructors, this._resolvedConstructors);
 	}
@@ -361,6 +370,9 @@ class Class extends ClassOrInterface {
 		writeln("");
 		this.getResolvedConstructors().forEach((constructor) => {
 			constructor.emit(indentAdder(writeln), FunctionKind.CONSTRUCTOR, true, this.namespace, context);
+		});
+		this.getResolvedStaticFunctions().forEach((staticMethod) => {
+			staticMethod.emit(indentAdder(writeln), FunctionKind.STATIC_METHOD, true, this.namespace, context);
 		});
 		writeln("}");
 		writeln("");
@@ -653,7 +665,8 @@ enum FunctionKind {
 	METHOD,
 	CONSTRUCTOR,
 	FREE_FUNCTION,
-	NAMESPACED_FUNCTION
+	NAMESPACED_FUNCTION,
+	STATIC_METHOD
 }
 
 class Function {
@@ -734,7 +747,7 @@ class Function {
 			} else {
 				jsLine += "return ";
 			}
-			if (kind == FunctionKind.METHOD || kind == FunctionKind.NAMESPACED_FUNCTION) {
+			if (kind == FunctionKind.METHOD || kind == FunctionKind.NAMESPACED_FUNCTION || kind == FunctionKind.STATIC_METHOD) {
 				jsLine += "@{self}."+this.rustName+"(";
 			} else if (kind == FunctionKind.CONSTRUCTOR) {
 				jsLine += "new @{self}(";
@@ -1295,7 +1308,7 @@ const NumberRustifiedType : RustifiedType = {
 const StringRustifiedType : RustifiedType = {
 	fromJsValue: (ns: Namespace, s:string) => "__js_value_into_string("+s+")",
 	structName: (ns: Namespace) => "String",
-	inArgPosName: (ns: Namespace) => "String",
+	inArgPosName: (ns: Namespace) => "impl AsRef<str> + stdweb::JsSerialize",
 	shortName: "String",
 	isNullable: false,
 }
@@ -1659,8 +1672,15 @@ function collectClass(symbol:ts.Symbol, type:ts.InterfaceType, context:Context) 
 						}
 					});
 					if (isStaticMethod) {
-						let sym = context.checker.getTypeAtLocation(mem);
-						console.log(sym);
+						let memType = context.checker.getTypeAtLocation(mem);
+						if (memType.symbol) {
+							let memName = memType.symbol.name;
+							let memRustName = escapeRustName(memName);
+							forEach(memType.getCallSignatures(), (callSig) => {
+								let sig = collectSignature(callSig, context);
+								result.addStaticMethod(new Function(memRustName, undefined, sig, callSig.getDocumentationComment(context.checker)), context);
+							});
+						}
 					}
 				}
 			});
@@ -1684,7 +1704,7 @@ function collectClass(symbol:ts.Symbol, type:ts.InterfaceType, context:Context) 
 			let declNameType = context.checker.getTypeOfSymbolAtLocation(result.symbol, declName);
 			let constructors = declNameType.getConstructSignatures();
 			constructors.forEach((constructor) => {
-				result.addConstructor(new Function("new", undefined, collectSignature(constructor, context),constructor.getDocumentationComment(context.checker)), context);
+				result.addConstructor(new Function("new", undefined, collectSignature(constructor, context), constructor.getDocumentationComment(context.checker)), context);
 			});
 		}
 	});
