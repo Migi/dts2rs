@@ -43,31 +43,48 @@ function indentAdder(writeln: (s:string) => void) : (s:string) => void {
 	};
 }
 
-function emitImplJsSerializeForType(rustName: string, writeln: (s:string) => void) {
+function emitImplJsSerializeForType(rustName: string, conversionToRef: string, writeln: (s:string) => void) {
 	writeln("#[doc(hidden)]");
 	writeln("impl ::stdweb::private::JsSerialize for "+rustName+" {");
 	writeln("\t#[doc(hidden)]");
 	writeln("\tfn _into_js< 'a >( &'a self, arena: &'a ::stdweb::private::PreallocatedArena ) -> ::stdweb::private::SerializedValue< 'a > {");
-	writeln("\t\tself.0._into_js(arena)");
+	writeln("\t\t"+conversionToRef+"._into_js(arena)");
 	writeln("\t}");
 	writeln("\t#[doc(hidden)]");
 	writeln("\tfn _memory_required( &self ) -> usize {");
-	writeln("\t\tself.0._memory_required()");
+	writeln("\t\t"+conversionToRef+"._memory_required()");
 	writeln("\t}");
 	writeln("}");
 	writeln("");
-	/*writeln("#[doc(hidden)]");
-	writeln("impl ::stdweb::private::JsSerializeOwned for "+rustName+" {");
-	writeln("\t#[doc(hidden)]");
-	writeln("\tfn into_js_owned< 'a >( value: &'a mut Option< Self >, arena: &'a ::stdweb::private::PreallocatedArena ) -> ::stdweb::private::SerializedValue< 'a > {");
-	writeln("\t\t::stdweb::private::JsSerializeOwned::into_js_owned(value.map(|v| v.0), arena)");
-	writeln("\t}");
-	writeln("\t#[doc(hidden)]");
-	writeln("\tfn memory_required_owned( &self ) -> usize {");
-	writeln("\t\tself.0.memory_required_owned()");
+}
+
+function emitImplToAnyForType(rustName: string, conversionToValue: string, writeln: (s:string) => void) {
+	writeln("impl ToAny for "+rustName+" {");
+	writeln("\tfn to_any(self) -> Any {");
+	writeln("\t\tAny("+conversionToValue+")");
 	writeln("\t}");
 	writeln("}");
-	writeln("");*/
+	writeln("");
+}
+
+function emitImplToAnyRefForType(rustName: string, conversionToRef: string, writeln: (s:string) => void) {
+	writeln("impl ToAnyRef for "+rustName+" {");
+	writeln("\tfn to_any_ref(self) -> AnyRef {");
+	writeln("\t\tAnyRef("+conversionToRef+")");
+	writeln("\t}");
+	writeln("}");
+	writeln("");
+}
+
+function emitImplToAnyAndAnyRefForType(rustName: string, conversionToRef: string, writeln: (s:string) => void) {
+	emitImplToAnyForType(rustName, "::stdweb::Value::Reference("+conversionToRef+")", writeln);
+	emitImplToAnyRefForType(rustName, conversionToRef, writeln);
+}
+
+// emits ToAny, ToAnyRef, and ::stdweb::JsSerialize, for a type that is a 1-element tuple with a ::stdweb::Reference in it
+function emitRefTypeTraits(rustName: string, writeln: (s:string) => void) {
+	emitImplToAnyAndAnyRefForType(rustName, "self.0", writeln);
+	emitImplJsSerializeForType(rustName, "self.0", writeln);
 }
 
 /**
@@ -196,7 +213,7 @@ class Class extends ClassOrInterface {
 		this.superClass = undefined;
 
 		this.rustifiedType = {
-			fromJsValue: (ns: Namespace, s:string) => ns.getRustPathTo(this.namespace, this.rustName)+"(__js_value_into_reference("+s+"))",
+			fromJsValue: (ns: Namespace, s:string) => ns.getRustPathTo(this.namespace, this.rustName)+"(__js_value_into_reference("+s+", \""+this.rustName+"\"))",
 			structName: (ns: Namespace) => ns.getRustPathTo(this.namespace, this.rustName),
 			inArgPosName: (ns: Namespace) => "impl "+ns.getRustPathTo(this.namespace, this.subClassOfTrait),
 			shortName: this.rustName,
@@ -319,16 +336,20 @@ class Class extends ClassOrInterface {
 				writeln("\t}");
 			}
 			if (!dontOutputThese.has("set_"+prop.rustName)) {
-				writeln("\tfn set_"+prop.rustName+"(&self, "+prop.rustName+": "+prop.type.inArgPosName(this.namespace)+") {");
+				writeln("\tfn set_"+prop.rustName+"(&self, "+prop.rustName+": "+prop.type.inArgPosName(this.namespace)+") -> &Self {");
 				writeln("\t\tjs!(@(no_return) @{self}."+prop.jsName+" = @{"+prop.rustName+"};);");
+				writeln("\t\tself");
 				writeln("\t}");
 				writeln("");
 			}
 		});
 		writeln("}");
 		writeln("");
+		writeln("impl "+this.subClassOfTrait+" for Any {}");
+		writeln("impl "+this.subClassOfTrait+" for AnyRef {}");
+		writeln("");
 
-		emitImplJsSerializeForType(this.rustName, writeln);
+		emitRefTypeTraits(this.rustName, writeln);
 
 		this.forEachSuperClass((superClass) => {
 			writeln("impl "+ this.namespace.getRustPathTo(superClass.namespace, superClass.subClassOfTrait) +" for "+this.rustName+" {");
@@ -376,7 +397,7 @@ class Class extends ClassOrInterface {
 		});
 		writeln("}");
 		writeln("");
-		emitImplJsSerializeForType("__"+this.rustName+"_Prototype", writeln);
+		emitRefTypeTraits("__"+this.rustName+"_Prototype", writeln);
 
 		/*let members = this.symbol.members;
 		if (members !== undefined) {
@@ -504,7 +525,7 @@ class Interface extends ClassOrInterface {
 		this.implementsTrait = escapeRustName("__Implements_"+symbol.name);
 
 		this.rustifiedType = {
-			fromJsValue: (ns: Namespace, s:string) => ns.getRustPathTo(this.namespace, this.rustName)+"(__js_value_into_reference("+s+"))",
+			fromJsValue: (ns: Namespace, s:string) => ns.getRustPathTo(this.namespace, this.rustName)+"(__js_value_into_reference("+s+", \""+this.rustName+"\"))",
 			structName: (ns: Namespace) => ns.getRustPathTo(this.namespace, this.rustName),
 			inArgPosName: (ns: Namespace) => "impl "+ns.getRustPathTo(this.namespace, this.implementsTrait),
 			shortName: this.rustName,
@@ -541,14 +562,23 @@ class Interface extends ClassOrInterface {
 		}
 
 		let dontOutputThese = new Set<string>();
+		let allProps : Variable[] = [];
 		this.forEachSuperImpl((i) => {
 			i.methods.forEach((f) => {
 				dontOutputThese.add(f.rustName);
 			});
 			i.properties.forEach((p) => {
+				if (!dontOutputThese.has("get_"+p.rustName) || !dontOutputThese.has("set_"+p.rustName)) {
+					allProps.push(p);
+				}
 				dontOutputThese.add("get_"+p.rustName);
 				dontOutputThese.add("set_"+p.rustName);
 			});
+		});
+		this.properties.forEach((p) => {
+			if (!dontOutputThese.has("get_"+p.rustName) || !dontOutputThese.has("set_"+p.rustName)) {
+				allProps.push(p);
+			}
 		});
 
 		/*this.forEachSuperImpl((i) => {
@@ -567,27 +597,51 @@ class Interface extends ClassOrInterface {
 				writeln("\t}");
 			}
 			if (!dontOutputThese.has("set_"+prop.rustName)) {
-				writeln("\tfn set_"+prop.rustName+"(&self, "+prop.rustName+": "+prop.type.inArgPosName(this.namespace)+") {");
+				writeln("\tfn set_"+prop.rustName+"(&self, "+prop.rustName+": "+prop.type.inArgPosName(this.namespace)+") -> &Self {");
 				writeln("\t\tjs!(@(no_return) @{self}."+prop.jsName+" = @{"+prop.rustName+"};);");
+				writeln("\t\tself");
 				writeln("\t}");
 			}
 		});
 		writeln("}");
 		writeln("");
-		emitImplJsSerializeForType(this.rustName, writeln);
 		this.forEachSuperImpl((i) => {
-			writeln("impl "+ this.namespace.getRustPathTo(i.namespace, i.implementsTrait) +" for "+this.rustName+" {");
-			/*i.getResolvedMethods().forEach((method) => {
-				method.emit(indentAdder(writeln), true, true, this.namespace, context);
-			})*/
-			writeln("}");
-			writeln("");
+			writeln("impl "+ this.namespace.getRustPathTo(i.namespace, i.implementsTrait) +" for "+this.rustName+" {}");
 		});
+		writeln("impl "+this.implementsTrait+" for "+this.rustName+" {}");
+		writeln("impl "+this.implementsTrait+" for Any {}");
+		writeln("impl "+this.implementsTrait+" for AnyRef {}");
+		writeln("");
+		
+		emitRefTypeTraits(this.rustName, writeln);
 		
 		writeln("pub struct __"+this.rustName+"_Prototype {");
 		writeln("}");
 		writeln("");
-		writeln("impl __"+this.rustName+"_Prototype {}");
+		writeln("impl __"+this.rustName+"_Prototype {");
+		let defLine = "\tpub fn new(&self";
+		allProps.forEach((prop) => {
+			if (!prop.isOptional) {
+				defLine += ", "+prop.rustName+": "+prop.type.inArgPosName(this.namespace);
+			}
+		});
+		defLine += ") -> "+this.rustName+" {";
+		writeln(defLine);
+		let implLine = "\t\t"+this.rustName+"(__js_value_into_reference(js!(return {";
+		let firstArg = true;
+		allProps.forEach((prop) => {
+			if (!prop.isOptional) {
+				if (!firstArg) {
+					implLine += ", ";
+				}
+				firstArg = false;
+				implLine += prop.jsName+": @{"+prop.rustName+"}";
+			}
+		});
+		implLine += "};), \"object implementing "+this.rustName+"\"))";
+		writeln(implLine);
+		writeln("\t}");
+		writeln("}");
 		writeln("");
 	}
 
@@ -606,11 +660,12 @@ class Variable {
 
 class Signature {
 	constructor(public args: Variable[], public returnType: RustifiedType, public returnJsType: string) {
-		let fnName = this.getRustTypeName();
+		let structName = this.getRustTypeName(false);
+		let traitName = this.getRustTypeName(true);
 		this.rustifiedType = {
-			fromJsValue: (ns: Namespace, s:string) => fnName+"(__js_value_into_reference("+s+"))",
-			structName: (ns: Namespace) => fnName,
-			inArgPosName: (ns: Namespace) => fnName,
+			fromJsValue: (ns: Namespace, s:string) => structName+"(__js_value_into_reference("+s+", \""+structName+"\"))",
+			structName: (ns: Namespace) => structName,
+			inArgPosName: (ns: Namespace) => "impl "+traitName,
 			shortName: "Fn"+this.args.length,
 			isNullable: false
 		};
@@ -633,8 +688,8 @@ class Signature {
 		return true;
 	}
 
-	getRustTypeName() : string {
-		let result = "JsFn";
+	getRustTypeName(trait: boolean) : string {
+		let result = (trait ? "JsCallable" : "JsFn");
 		if (this.args.length > 0) {
 			result += "__";
 			let isFirstParam = true;
@@ -973,6 +1028,9 @@ class Namespace {
 		writeln("}");
 		writeln("");
 
+		emitImplToAnyAndAnyRefForType(eagerNamespaceRustName, "self.__js_ref", writeln);
+		emitImplJsSerializeForType(eagerNamespaceRustName, "self.__js_ref", writeln);
+
 		let lazyNamespaceRustName = "__LazyNamespace_"+this.rustName;
 		if (this.parent == undefined) {
 			lazyNamespaceRustName = "__LazyGlobals";
@@ -1019,7 +1077,7 @@ class Namespace {
 		writeln("");
 		
 		//if (this.parent != undefined) {
-			emitImplJsSerializeForType(lazyNamespaceRustName, writeln);
+		emitRefTypeTraits(lazyNamespaceRustName, writeln);
 		//}
 
 		if (this.parent == undefined) {
@@ -1262,7 +1320,7 @@ let typeToStdwebTypeMap : {[key:string]: RustifiedType} = {};
 {
 	function add(key:string, val:string) {
 		typeToStdwebTypeMap[key] = {
-			fromJsValue: (ns: Namespace, s:string) => "unsafe {<::stdweb::web::"+val+" as ::stdweb::ReferenceType>::from_reference_unchecked(__js_value_into_reference("+s+"))}",
+			fromJsValue: (ns: Namespace, s:string) => "unsafe {<::stdweb::web::"+val+" as ::stdweb::ReferenceType>::from_reference_unchecked(__js_value_into_reference("+s+", \"::stdweb::web::"+val+"\"))}",
 			structName: (ns: Namespace) => "::stdweb::web::"+val,
 			inArgPosName: (ns: Namespace) => "::stdweb::web::"+val,
 			shortName: key,
@@ -1274,7 +1332,7 @@ let typeToStdwebTypeMap : {[key:string]: RustifiedType} = {};
 	// TODO: add the rest
 }
 typeToStdwebTypeMap["Function"] = {
-	fromJsValue: (ns: Namespace, s:string) => "unsafe {__UntypedJsFn(__js_value_into_reference("+s+"))}",
+	fromJsValue: (ns: Namespace, s:string) => "__UntypedJsFn(__js_value_into_reference("+s+", \"function\"))",
 	structName: (ns: Namespace) => "__UntypedJsFn",
 	inArgPosName: (ns: Namespace) => "impl __JsCallable",
 	shortName: "Fn",
@@ -1290,10 +1348,26 @@ interface RustifiedType {
 }
 
 const AnyRustifiedType : RustifiedType = {
+	fromJsValue: (ns: Namespace, s:string) => "Any("+s+")",
+	structName: (ns: Namespace) => "Any",
+	inArgPosName: (ns: Namespace) => "impl ::stdweb::JsSerialize",
+	shortName: "Any",
+	isNullable: true,
+}
+
+const AnyRefRustifiedType : RustifiedType = {
+	fromJsValue: (ns: Namespace, s:string) => "AnyRef(__js_value_into_reference("+s+", \"reference\"))",
+	structName: (ns: Namespace) => "AnyRef",
+	inArgPosName: (ns: Namespace) => "impl ::stdweb::JsSerialize",
+	shortName: "AnyRef",
+	isNullable: true,
+}
+
+const UnknownRustifiedType : RustifiedType = {
 	fromJsValue: (ns: Namespace, s:string) => s,
 	structName: (ns: Namespace) => "::stdweb::Value",
 	inArgPosName: (ns: Namespace) => "impl ::stdweb::JsSerialize",
-	shortName: "Any",
+	shortName: "Unknown",
 	isNullable: true,
 }
 
@@ -1387,25 +1461,25 @@ function rustifyTypeUsingOnlyFlags(type:ts.Type) : RustifiedType {
 	} else if (f & ts.TypeFlags.Never) {
 		return UnitRustifiedType;
 	} else if (f & ts.TypeFlags.TypeParameter) {
-		return AnyRustifiedType;
+		return UnknownRustifiedType;
 	} else if (f & ts.TypeFlags.Object) {
-		return AnyRustifiedType;
+		return AnyRefRustifiedType;
 	} else if (f & ts.TypeFlags.Union) {
-		return AnyRustifiedType;
+		return UnknownRustifiedType;
 	} else if (f & ts.TypeFlags.Intersection) {
-		return AnyRustifiedType;
+		return UnknownRustifiedType;
 	} else if (f & ts.TypeFlags.Index) {
-		return AnyRustifiedType;
+		return UnknownRustifiedType;
 	} else if (f & ts.TypeFlags.IndexedAccess) {
-		return AnyRustifiedType;
+		return UnknownRustifiedType;
 	} else if (f & ts.TypeFlags.Conditional) {
-		return AnyRustifiedType;
+		return UnknownRustifiedType;
 	} else if (f & ts.TypeFlags.Substitution) {
-		return AnyRustifiedType;
+		return UnknownRustifiedType;
 	} else if (f & ts.TypeFlags.NonPrimitive) {
-		return AnyRustifiedType;
+		return AnyRefRustifiedType;
 	} else {
-		return AnyRustifiedType;
+		return UnknownRustifiedType;
 	}
 }
 
@@ -1461,7 +1535,7 @@ function collectType(type:ts.Type, context:Context) : RustifiedType {
 			if (allMatch) {
 				return types[0];
 			} else {
-				return AnyRustifiedType;
+				return UnknownRustifiedType;
 			}
 		}
 
@@ -1554,27 +1628,36 @@ function collectSymbolEnclosingNamespaces(symbol:ts.Symbol, context:Context) : [
 
 function collectSignature(signature: ts.Signature, context: Context) : Signature {
 	let retType = collectType(signature.getReturnType(), context);
-	let args = signature.parameters.map((param) => {
+	let args : Variable[] = [];
+	signature.parameters.forEach((param) => {
 		let type = context.checker.getTypeOfSymbolAtLocation(param, param.valueDeclaration!);
 		let rustType = collectType(type, context);
 		let isOptional = false;
+		let hasDotDotDot = false;
 		forEach(param.declarations, (paramDecl) => {
-			if (ts.isParameter(paramDecl) && context.checker.isOptionalParameter(paramDecl)) {
-				isOptional = true;
+			if (ts.isParameter(paramDecl)) {
+				if (context.checker.isOptionalParameter(paramDecl)) {
+					isOptional = true;
+				}
+				if (paramDecl.dotDotDotToken !== undefined) {
+					hasDotDotDot = true;
+				}
 			}
 		});
 		if (isOptional) {
 			rustType = makeRustifiedTypeOptional(rustType, context);
 		}
-		return new Variable(param.name, context.checker.typeToString(type), escapeRustName(param.name), rustType, isOptional);
+		if (!hasDotDotDot) {
+			args.push(new Variable(param.name, context.checker.typeToString(type), escapeRustName(param.name), rustType, isOptional));
+		}
 	});
 	return new Signature(args, retType, context.checker.typeToString(signature.getReturnType()));
 }
 
 function collectClosure(signature: Signature, context: Context) : RustifiedType {
-	let fnName = signature.getRustTypeName();
+	let fnName = signature.getRustTypeName(false);
 	
-	let existing = context.closures.find((sig) => { return sig.getRustTypeName() == fnName; });
+	let existing = context.closures.find((sig) => { return sig.getRustTypeName(false) == fnName; });
 
 	if (existing !== undefined) {
 		return existing.rustifiedType;
@@ -1600,7 +1683,7 @@ function collectFunction(symbol:ts.Symbol, type:ts.Type, context:Context) : Rust
 		});
 	});
 
-	return AnyRustifiedType;
+	return UnknownRustifiedType; // TODO: we can be more precise here
 }
 
 function collectMembers(obj: ClassOrInterface, context: Context) {
@@ -1858,95 +1941,119 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string,
 	
 	let writeln = (s:string) => outStr += s+"\n";
 	
-	outStr += "#![allow(non_camel_case_types, non_snake_case)]\n";
-	outStr += "\n";
-	outStr += "#[macro_use]\n";
-	outStr += "extern crate stdweb;\n";
-	outStr += "\n";
-	outStr += "fn __js_value_into_undefined(val: ::stdweb::Value) -> ::stdweb::Undefined {\n";
-	outStr += "\tif let ::stdweb::Value::Undefined = val {\n";
-	outStr += "\t\t::stdweb::Undefined\n";
-	outStr += "\t} else {\n";
-	outStr += "\t\tjs!(@(no_return) console.error(\"ERROR: expected JS code to return undefined, but it returned: \", @{val}));\n";
-	outStr += "\t\tpanic!(\"Can't unwrap JS value as undefined\")\n";
-	outStr += "\t}\n";
-	outStr += "}\n";
-	outStr += "\n";
-	outStr += "fn __js_value_into_null(val: ::stdweb::Value) -> ::stdweb::Null {\n";
-	outStr += "\tif let ::stdweb::Value::Null = val {\n";
-	outStr += "\t\t::stdweb::Null\n";
-	outStr += "\t} else {\n";
-	outStr += "\t\tjs!(@(no_return) console.error(\"ERROR: expected JS code to return null, but it returned: \", @{val}));\n";
-	outStr += "\t\tpanic!(\"Can't unwrap JS value as null\")\n";
-	outStr += "\t}\n";
-	outStr += "}\n";
-	outStr += "\n";
-	outStr += "fn __js_value_into_bool(val: ::stdweb::Value) -> bool {\n";
-	outStr += "\tif let ::stdweb::Value::Bool(b) = val {\n";
-	outStr += "\t\tb\n";
-	outStr += "\t} else {\n";
-	outStr += "\t\tjs!(@(no_return) console.error(\"ERROR: expected JS code to return a bool, but it returned: \", @{val}));\n";
-	outStr += "\t\tpanic!(\"Can't unwrap JS value as bool\")\n";
-	outStr += "\t}\n";
-	outStr += "}\n";
-	outStr += "\n";
-	outStr += "fn __js_value_into_number(val: ::stdweb::Value) -> f64 {\n";
-	outStr += "\tif let ::stdweb::Value::Number(n) = val {\n";
-	outStr += "\t\t::stdweb::unstable::TryInto::try_into(n).unwrap()\n";
-	outStr += "\t} else {\n";
-	outStr += "\t\tjs!(@(no_return) console.error(\"ERROR: expected JS code to return a number, but it returned: \", @{val}));\n";
-	outStr += "\t\tpanic!(\"Can't unwrap JS value as number\")\n";
-	outStr += "\t}\n";
-	outStr += "}\n";
-	outStr += "\n";
-	outStr += "fn __js_value_into_symbol(val: ::stdweb::Value) -> ::stdweb::Symbol {\n";
-	outStr += "\tif let ::stdweb::Value::Symbol(s) = val {\n";
-	outStr += "\t\ts\n";
-	outStr += "\t} else {\n";
-	outStr += "\t\tjs!(@(no_return) console.error(\"ERROR: expected JS code to return a symbol, but it returned: \", @{val}));\n";
-	outStr += "\t\tpanic!(\"Can't unwrap JS value as symbol\")\n";
-	outStr += "\t}\n";
-	outStr += "}\n";
-	outStr += "\n";
-	outStr += "fn __js_value_into_string(val: ::stdweb::Value) -> String {\n";
-	outStr += "\tif let ::stdweb::Value::String(s) = val {\n";
-	outStr += "\t\ts\n";
-	outStr += "\t} else {\n";
-	outStr += "\t\tjs!(@(no_return) console.error(\"ERROR: expected JS code to return a string, but it returned: \", @{val}));\n";
-	outStr += "\t\tpanic!(\"Can't unwrap JS value as string\")\n";
-	outStr += "\t}\n";
-	outStr += "}\n";
-	outStr += "\n";
-	outStr += "fn __js_value_into_reference(val: ::stdweb::Value) -> ::stdweb::Reference {\n";
-	outStr += "\tif let ::stdweb::Value::Reference(r) = val {\n";
-	outStr += "\t\tr\n";
-	outStr += "\t} else {\n";
-	outStr += "\t\tjs!(@(no_return) console.error(\"ERROR: expected JS code to return a reference, but it returned: \", @{val}));\n";
-	outStr += "\t\tpanic!(\"Can't unwrap JS value as reference\")\n";
-	outStr += "\t}\n";
-	outStr += "}\n";
-	outStr += "\n";
-	outStr += "pub struct __UntypedJsFn(::stdweb::Reference);\n";
-	outStr += "\n";
-	emitImplJsSerializeForType("__UntypedJsFn", writeln);
-	outStr += "pub trait __JsCallable : ::stdweb::JsSerialize {}\n";
-	outStr += "\n";
-	outStr += "impl __JsCallable for __UntypedJsFn {}\n";
-	outStr += "\n";
+	writeln("#![allow(non_camel_case_types, non_snake_case)]");
+	writeln("");
+	writeln("#[macro_use]");
+	writeln("extern crate stdweb;");
+	writeln("");
+	writeln("pub struct Any(pub ::stdweb::Value);");
+	writeln("");
+	emitImplJsSerializeForType("Any", "self.0", writeln);
+	writeln("pub trait ToAny : ::stdweb::JsSerialize {");
+	writeln("\tfn to_any(self) -> Any;");
+	writeln("}");
+	writeln("");
+	writeln("pub struct AnyRef(pub ::stdweb::Reference);");
+	writeln("");
+	emitImplToAnyForType("AnyRef", "::stdweb::Value::Reference(self.0)", writeln);
+	emitImplJsSerializeForType("AnyRef", "self.0", writeln);
+	writeln("pub trait ToAnyRef : ToAny {");
+	writeln("\tfn to_any_ref(self) -> AnyRef;");
+	writeln("}");
+	writeln("");
+	emitImplToAnyForType("::stdweb::Value", "self", writeln);
+	emitImplToAnyAndAnyRefForType("::stdweb::Reference", "self", writeln);
+	writeln("fn __js_value_into_undefined(val: ::stdweb::Value) -> ::stdweb::Undefined {");
+	writeln("\tif let ::stdweb::Value::Undefined = val {");
+	writeln("\t\t::stdweb::Undefined");
+	writeln("\t} else {");
+	writeln("\t\tjs!(@(no_return) console.error(\"ERROR: expected JS code to return undefined, but it returned: \", @{val}));");
+	writeln("\t\tpanic!(\"Can't unwrap JS value as undefined\")");
+	writeln("\t}");
+	writeln("}");
+	writeln("");
+	writeln("fn __js_value_into_null(val: ::stdweb::Value) -> ::stdweb::Null {");
+	writeln("\tif let ::stdweb::Value::Null = val {");
+	writeln("\t\t::stdweb::Null");
+	writeln("\t} else {");
+	writeln("\t\tjs!(@(no_return) console.error(\"ERROR: expected JS code to return null, but it returned: \", @{val}));");
+	writeln("\t\tpanic!(\"Can't unwrap JS value as null\")");
+	writeln("\t}");
+	writeln("}");
+	writeln("");
+	writeln("fn __js_value_into_bool(val: ::stdweb::Value) -> bool {");
+	writeln("\tif let ::stdweb::Value::Bool(b) = val {");
+	writeln("\t\tb");
+	writeln("\t} else {");
+	writeln("\t\tjs!(@(no_return) console.error(\"ERROR: expected JS code to return a bool, but it returned: \", @{val}));");
+	writeln("\t\tpanic!(\"Can't unwrap JS value as bool\")");
+	writeln("\t}");
+	writeln("}");
+	writeln("");
+	writeln("fn __js_value_into_number(val: ::stdweb::Value) -> f64 {");
+	writeln("\tif let ::stdweb::Value::Number(n) = val {");
+	writeln("\t\t::stdweb::unstable::TryInto::try_into(n).unwrap()");
+	writeln("\t} else {");
+	writeln("\t\tjs!(@(no_return) console.error(\"ERROR: expected JS code to return a number, but it returned: \", @{val}));");
+	writeln("\t\tpanic!(\"Can't unwrap JS value as number\")");
+	writeln("\t}");
+	writeln("}");
+	writeln("");
+	writeln("fn __js_value_into_symbol(val: ::stdweb::Value) -> ::stdweb::Symbol {");
+	writeln("\tif let ::stdweb::Value::Symbol(s) = val {");
+	writeln("\t\ts");
+	writeln("\t} else {");
+	writeln("\t\tjs!(@(no_return) console.error(\"ERROR: expected JS code to return a symbol, but it returned: \", @{val}));");
+	writeln("\t\tpanic!(\"Can't unwrap JS value as symbol\")");
+	writeln("\t}");
+	writeln("}");
+	writeln("");
+	writeln("fn __js_value_into_string(val: ::stdweb::Value) -> String {");
+	writeln("\tif let ::stdweb::Value::String(s) = val {");
+	writeln("\t\ts");
+	writeln("\t} else {");
+	writeln("\t\tjs!(@(no_return) console.error(\"ERROR: expected JS code to return a string, but it returned: \", @{val}));");
+	writeln("\t\tpanic!(\"Can't unwrap JS value as string\")");
+	writeln("\t}");
+	writeln("}");
+	writeln("");
+	writeln("fn __js_value_into_reference(val: ::stdweb::Value, name: &str) -> ::stdweb::Reference {");
+	writeln("\tif let ::stdweb::Value::Reference(r) = val {");
+	writeln("\t\tr");
+	writeln("\t} else {");
+	writeln("\t\tjs!(@(no_return) console.error(\"ERROR: expected JS code to return a \"+@{name}+\", but it returned: \", @{val}));");
+	writeln("\t\tpanic!(\"Can't unwrap JS value as reference\")");
+	writeln("\t}");
+	writeln("}");
+	writeln("");
+	writeln("pub struct __UntypedJsFn(::stdweb::Reference);");
+	writeln("");
+	emitRefTypeTraits("__UntypedJsFn", writeln);
+	writeln("/// If a type implements this trait that means that you can call it in JavaScript (with some unknown number of arguments).");
+	writeln("pub trait __JsCallable : ::stdweb::JsSerialize {}");
+	writeln("");
+	writeln("impl __JsCallable for __UntypedJsFn {}");
+	writeln("impl<'a> __JsCallable for &'a __UntypedJsFn {}");
+	writeln("impl __JsCallable for Any {}");
+	writeln("impl __JsCallable for AnyRef {}");
+	writeln("");
 
 	context.closures.forEach((f) => {
-		let fStructName = f.getRustTypeName();
-		outStr += "pub struct "+fStructName+"(::stdweb::Reference);\n";
-		outStr += "\n";
-		emitImplJsSerializeForType(fStructName, writeln);
-		outStr += "impl __JsCallable for "+fStructName+" {}\n";
-		outStr += "\n";
-		outStr += "impl "+fStructName+" {\n";
-		outStr += "\tpub fn call(&self";
+		let fStructName = f.getRustTypeName(false);
+		let fTraitName = f.getRustTypeName(true);
+		writeln("pub struct "+fStructName+"(::stdweb::Reference);");
+		writeln("");
+		emitRefTypeTraits(fStructName, writeln);
+		writeln("impl __JsCallable for "+fStructName+" {}");
+		writeln("impl<'a> __JsCallable for &'a "+fStructName+" {}");
+		writeln("");
+		writeln("pub trait "+fTraitName+" : __JsCallable + ::stdweb::JsSerialize {");
+		let fnDefLine = "\tfn call(&self";
 		for (let i = 0; i < f.args.length; i++) {
-			outStr += ", arg"+(i+1)+": "+f.args[i].type.inArgPosName(context.rootNameSpace);
+			fnDefLine += ", arg"+(i+1)+": "+f.args[i].type.inArgPosName(context.rootNameSpace);
 		}
-		outStr += ") -> "+f.returnType.structName(context.rootNameSpace)+" {\n";
+		fnDefLine += ") -> "+f.returnType.structName(context.rootNameSpace)+" {";
+		writeln(fnDefLine);
 		let jsLine = "js!(return @{self}(";
 		if (rustifiedTypesAreSame(f.returnType, UnitRustifiedType, context)) {
 			jsLine = "js!(@(no_return) @{self}("
@@ -1958,10 +2065,16 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string,
 			jsLine += "@{arg"+(i+1)+"}";
 		}
 		jsLine += ");)";
-		outStr += "\t\t"+f.returnType.fromJsValue(context.rootNameSpace, jsLine)+"\n";
-		outStr += "\t}\n";
-		outStr += "}\n";
-		outStr += "\n";
+		writeln("\t\t"+f.returnType.fromJsValue(context.rootNameSpace, jsLine));
+		writeln("\t}");
+		writeln("}");
+		writeln("");
+		writeln("impl "+fTraitName+" for "+fStructName+" {}");
+		writeln("impl<'a> "+fTraitName+" for &'a "+fStructName+" {}");
+		writeln("");
+		writeln("impl "+fTraitName+" for Any {}");
+		writeln("impl "+fTraitName+" for AnyRef {}");
+		writeln("");
 	});
 
 	/*outStr += "pub trait "+CLASS_BASE_TRAITS+" : ::stdweb::private::JsSerialize + ::stdweb::private::JsSerializeOwned {\n";
@@ -1985,7 +2098,13 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string,
 	context.rootNameSpace.emit(writeln, context);
 
 	writeln("pub mod prelude {");
+	writeln("\tpub use ToAny;");
+	writeln("\tpub use ToAnyRef;");
 	context.rootNameSpace.emitPrelude(indentAdder(writeln), context);
+	context.closures.forEach((f) => {
+		let fTraitName = f.getRustTypeName(true);
+		writeln("\tpub use "+fTraitName+";");
+	});
 	writeln("}");
 
 	ambientModules.forEach((ambientMod) => {
@@ -2001,7 +2120,7 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string,
 		writeln("\t\tscript.onload = resolve;");
 		writeln("\t\tscript.onerror = reject;");
 		writeln("\t\tdocument.head.appendChild(script);");
-		writeln("\t});))).unwrap()");
+		writeln("\t});), \"promise\")).unwrap()");
 		writeln("}");
 	});
 

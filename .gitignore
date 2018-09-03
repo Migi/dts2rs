@@ -61,3 +61,6 @@ typings/
 .next
 bin/
 test/pixi.js/output/
+test/pixitest/Cargo.lock
+test/pixitest/target/
+test/react/output/

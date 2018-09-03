@@ -6,18 +6,26 @@ extern crate pixi_js;
 use pixi_js::prelude::*;
 use stdweb::web::*;
 
-fn exampleMain() -> Result<(), &'static str> {
+fn example_main() -> Result<(), &'static str> {
 	let pixi = pixi_js::PIXI::__LazyNamespace_PIXI::__init_from_js_value(js!(return PIXI;))?;
 
-	let app = pixi.Application()?.new1(Some(js!(return {
+	/*let app = pixi.Application()?.new1(Some(js!(return {
 		width: 800,
 		height: 600,
 		backgroundColor : 0x1099bb
-	};)));
+	};).to_any()));*/
+
+	let options = pixi.ApplicationOptions().new();
+	options
+		.set_width(Some(800.))
+		.set_height(Some(600.))
+		.set_backgroundColor(Some(0x1099bb as f64));
+	let app = pixi.Application()?.new1(Some(options));
 	document().body().expect("No body found!").append_child(&app.get_view());
 
 	// create a new Sprite from an image path
-	let bunny = pixi.Sprite()?.fromImage("https://pixijs.io/examples/required/assets/basics/bunny.png", None, None);
+	//let bunny = pixi.Sprite()?.fromImage("https://pixijs.io/examples/required/assets/basics/bunny.png", None, None);
+	let bunny = pixi.Sprite()?.fromImage("bunny.png", None, None);
 
 	// center the sprite's anchor point
 	bunny.get_anchor().set(Some(0.5), Some(0.5));
@@ -26,7 +34,7 @@ fn exampleMain() -> Result<(), &'static str> {
 	bunny.set_x(app.get_screen().get_width() / 2.);
 	bunny.set_y(app.get_screen().get_height() / 2.);
 
-	app.get_stage().addChild(bunny, stdweb::Undefined);
+	app.get_stage().addChild(&bunny);
 
 	// Listen for animate update
 	/*app.get_ticker().add(function(delta) {
@@ -35,6 +43,13 @@ fn exampleMain() -> Result<(), &'static str> {
 		// creates frame-independent transformation
 		bunny.rotation += 0.1 * delta;
 	}, None);*/
+
+	app.get_ticker().add(js!(return function(delta) {
+		// just for fun, let's rotate mr rabbit a little
+		// delta is 1 if running at 100% performance
+		// creates frame-independent transformation
+		@{bunny}.rotation += 0.1 * delta;
+	};).to_any(), ::stdweb::Undefined, None);
 
 	Ok(())
 }
@@ -48,7 +63,7 @@ fn main() {
 			return;
 		}
 
-		
+		example_main().unwrap();
 	});
 
 	_done_handle.leak();
