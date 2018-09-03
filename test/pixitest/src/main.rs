@@ -6,25 +6,19 @@ extern crate pixi_js;
 use pixi_js::prelude::*;
 use stdweb::web::*;
 
-fn example_main() -> Result<(), &'static str> {
-	let pixi = pixi_js::PIXI::__LazyNamespace_PIXI::__init_from_js_value(js!(return PIXI;))?;
-
-	/*let app = pixi.Application()?.new1(Some(js!(return {
-		width: 800,
-		height: 600,
-		backgroundColor : 0x1099bb
-	};).to_any()));*/
+fn example_main() {
+	let pixi = pixi_js::PIXI::__LazyNamespace_PIXI::__from_js_value(js!(return PIXI;));
 
 	let options = pixi.ApplicationOptions().new();
 	options
 		.set_width(Some(800.))
 		.set_height(Some(600.))
 		.set_backgroundColor(Some(0x1099bb as f64));
-	let app = pixi.Application()?.new1(Some(options));
+	let app = pixi.Application().new1(Some(options));
 	document().body().expect("No body found!").append_child(&app.get_view());
 
 	// create a new Sprite from an image path
-	let bunny = pixi.Sprite()?.fromImage("bunny.png", None, None);
+	let bunny = pixi.Sprite().fromImage("bunny.png", None, None);
 
 	// center the sprite's anchor point
 	bunny.get_anchor().set(Some(0.5), Some(0.5));
@@ -41,8 +35,6 @@ fn example_main() -> Result<(), &'static str> {
 		// creates frame-independent transformation
 		@{bunny}.rotation += 0.1 * delta;
 	};).as_any(), ::stdweb::Undefined, None);
-
-	Ok(())
 }
 
 fn main() {
@@ -54,7 +46,7 @@ fn main() {
 			return;
 		}
 
-		example_main().unwrap();
+		example_main();
 	});
 
 	_done_handle.leak();
