@@ -24,7 +24,6 @@ fn example_main() -> Result<(), &'static str> {
 	document().body().expect("No body found!").append_child(&app.get_view());
 
 	// create a new Sprite from an image path
-	//let bunny = pixi.Sprite()?.fromImage("https://pixijs.io/examples/required/assets/basics/bunny.png", None, None);
 	let bunny = pixi.Sprite()?.fromImage("bunny.png", None, None);
 
 	// center the sprite's anchor point
@@ -36,20 +35,12 @@ fn example_main() -> Result<(), &'static str> {
 
 	app.get_stage().addChild(&bunny);
 
-	// Listen for animate update
-	/*app.get_ticker().add(function(delta) {
-		// just for fun, let's rotate mr rabbit a little
-		// delta is 1 if running at 100% performance
-		// creates frame-independent transformation
-		bunny.rotation += 0.1 * delta;
-	}, None);*/
-
 	app.get_ticker().add(js!(return function(delta) {
 		// just for fun, let's rotate mr rabbit a little
 		// delta is 1 if running at 100% performance
 		// creates frame-independent transformation
 		@{bunny}.rotation += 0.1 * delta;
-	};).to_any(), ::stdweb::Undefined, None);
+	};).as_any(), ::stdweb::Undefined, None);
 
 	Ok(())
 }

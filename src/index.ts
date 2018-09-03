@@ -47,43 +47,15 @@ function emitImplJsSerializeForType(rustName: string, conversionToRef: string, w
 	writeln("#[doc(hidden)]");
 	writeln("impl ::stdweb::private::JsSerialize for "+rustName+" {");
 	writeln("\t#[doc(hidden)]");
-	writeln("\tfn _into_js< 'a >( &'a self, arena: &'a ::stdweb::private::PreallocatedArena ) -> ::stdweb::private::SerializedValue< 'a > {");
-	writeln("\t\t"+conversionToRef+"._into_js(arena)");
-	writeln("\t}");
-	writeln("\t#[doc(hidden)]");
-	writeln("\tfn _memory_required( &self ) -> usize {");
-	writeln("\t\t"+conversionToRef+"._memory_required()");
+	writeln("\tfn _into_js< 'a >( &'a self ) -> ::stdweb::private::SerializedValue< 'a > {");
+	writeln("\t\t"+conversionToRef+"._into_js()");
 	writeln("\t}");
 	writeln("}");
 	writeln("");
 }
 
-function emitImplToAnyForType(rustName: string, conversionToValue: string, writeln: (s:string) => void) {
-	writeln("impl ToAny for "+rustName+" {");
-	writeln("\tfn to_any(self) -> Any {");
-	writeln("\t\tAny("+conversionToValue+")");
-	writeln("\t}");
-	writeln("}");
-	writeln("");
-}
-
-function emitImplToAnyRefForType(rustName: string, conversionToRef: string, writeln: (s:string) => void) {
-	writeln("impl ToAnyRef for "+rustName+" {");
-	writeln("\tfn to_any_ref(self) -> AnyRef {");
-	writeln("\t\tAnyRef("+conversionToRef+")");
-	writeln("\t}");
-	writeln("}");
-	writeln("");
-}
-
-function emitImplToAnyAndAnyRefForType(rustName: string, conversionToRef: string, writeln: (s:string) => void) {
-	emitImplToAnyForType(rustName, "::stdweb::Value::Reference("+conversionToRef+")", writeln);
-	emitImplToAnyRefForType(rustName, conversionToRef, writeln);
-}
-
-// emits ToAny, ToAnyRef, and ::stdweb::JsSerialize, for a type that is a 1-element tuple with a ::stdweb::Reference in it
+// emits ::stdweb::JsSerialize for a type that is a 1-element tuple with a ::stdweb::Reference in it
 function emitRefTypeTraits(rustName: string, writeln: (s:string) => void) {
-	emitImplToAnyAndAnyRefForType(rustName, "self.0", writeln);
 	emitImplJsSerializeForType(rustName, "self.0", writeln);
 }
 
@@ -95,7 +67,6 @@ function emitRefTypeTraits(rustName: string, writeln: (s:string) => void) {
  */
 function forEachFunctionWithUniqueNames(list: Function[], cb: (f: Function, name: string) => void) {
 	let forbiddenNames = new Set<string>();
-
 	{
 		let encounteredSoFar = new Map<string, Function>();
 		list.forEach((f) => {
@@ -345,34 +316,22 @@ class Class extends ClassOrInterface {
 		});
 		writeln("}");
 		writeln("");
-		writeln("impl "+this.subClassOfTrait+" for Any {}");
-		writeln("impl "+this.subClassOfTrait+" for AnyRef {}");
+		writeln("impl<T: ::stdweb::JsSerialize> "+this.subClassOfTrait+" for Any<T> {}");
 		writeln("");
 
 		emitRefTypeTraits(this.rustName, writeln);
 
 		this.forEachSuperClass((superClass) => {
-			writeln("impl "+ this.namespace.getRustPathTo(superClass.namespace, superClass.subClassOfTrait) +" for "+this.rustName+" {");
-			/*superClass.getResolvedMethods().forEach((method) => {
-				method.emit(indentAdder(writeln), true, true, this.namespace, context);
-			})*/
-			writeln("}");
-			writeln("");
+			writeln("impl "+ this.namespace.getRustPathTo(superClass.namespace, superClass.subClassOfTrait) +" for "+this.rustName+" {}");
+			writeln("impl<'a> "+ this.namespace.getRustPathTo(superClass.namespace, superClass.subClassOfTrait) +" for &'a "+this.rustName+" {}");
 		});
 		this.forEachSuperImpl((i) => {
-			writeln("impl "+ this.namespace.getRustPathTo(i.namespace, i.implementsTrait) +" for "+this.rustName+" {");
-			/*i.getResolvedMethods().forEach((method) => {
-				method.emit(indentAdder(writeln), true, true, this.namespace, context);
-			})*/
-			writeln("}");
-			writeln("");
+			writeln("impl "+ this.namespace.getRustPathTo(i.namespace, i.implementsTrait) +" for "+this.rustName+" {}");
+			writeln("impl<'a> "+ this.namespace.getRustPathTo(i.namespace, i.implementsTrait) +" for &'a "+this.rustName+" {}");
 		});
 		
-		writeln("impl "+ this.subClassOfTrait +" for "+this.rustName+" {");
-		/*this.getResolvedMethods().forEach((method) => {
-			method.emit(indentAdder(writeln), true, true, this.namespace, context);
-		});*/
-		writeln("}");
+		writeln("impl "+ this.subClassOfTrait +" for "+this.rustName+" {}");
+		writeln("impl<'a> "+ this.subClassOfTrait +" for &'a "+this.rustName+" {}");
 		writeln("");
 
 		writeln("pub struct __"+this.rustName+"_Prototype(::stdweb::Reference);");
@@ -607,10 +566,11 @@ class Interface extends ClassOrInterface {
 		writeln("");
 		this.forEachSuperImpl((i) => {
 			writeln("impl "+ this.namespace.getRustPathTo(i.namespace, i.implementsTrait) +" for "+this.rustName+" {}");
+			writeln("impl<'a> "+ this.namespace.getRustPathTo(i.namespace, i.implementsTrait) +" for &'a "+this.rustName+" {}");
 		});
 		writeln("impl "+this.implementsTrait+" for "+this.rustName+" {}");
-		writeln("impl "+this.implementsTrait+" for Any {}");
-		writeln("impl "+this.implementsTrait+" for AnyRef {}");
+		writeln("impl<'a> "+this.implementsTrait+" for &'a "+this.rustName+" {}");
+		writeln("impl<T: ::stdweb::JsSerialize> "+this.implementsTrait+" for Any<T> {}");
 		writeln("");
 		
 		emitRefTypeTraits(this.rustName, writeln);
@@ -1028,7 +988,6 @@ class Namespace {
 		writeln("}");
 		writeln("");
 
-		emitImplToAnyAndAnyRefForType(eagerNamespaceRustName, "self.__js_ref", writeln);
 		emitImplJsSerializeForType(eagerNamespaceRustName, "self.__js_ref", writeln);
 
 		let lazyNamespaceRustName = "__LazyNamespace_"+this.rustName;
@@ -1349,17 +1308,9 @@ interface RustifiedType {
 
 const AnyRustifiedType : RustifiedType = {
 	fromJsValue: (ns: Namespace, s:string) => "Any("+s+")",
-	structName: (ns: Namespace) => "Any",
+	structName: (ns: Namespace) => "Any<::stdweb::Value>",
 	inArgPosName: (ns: Namespace) => "impl ::stdweb::JsSerialize",
 	shortName: "Any",
-	isNullable: true,
-}
-
-const AnyRefRustifiedType : RustifiedType = {
-	fromJsValue: (ns: Namespace, s:string) => "AnyRef(__js_value_into_reference("+s+", \"reference\"))",
-	structName: (ns: Namespace) => "AnyRef",
-	inArgPosName: (ns: Namespace) => "impl ::stdweb::JsSerialize",
-	shortName: "AnyRef",
 	isNullable: true,
 }
 
@@ -1463,7 +1414,7 @@ function rustifyTypeUsingOnlyFlags(type:ts.Type) : RustifiedType {
 	} else if (f & ts.TypeFlags.TypeParameter) {
 		return UnknownRustifiedType;
 	} else if (f & ts.TypeFlags.Object) {
-		return AnyRefRustifiedType;
+		return AnyRustifiedType;
 	} else if (f & ts.TypeFlags.Union) {
 		return UnknownRustifiedType;
 	} else if (f & ts.TypeFlags.Intersection) {
@@ -1477,7 +1428,7 @@ function rustifyTypeUsingOnlyFlags(type:ts.Type) : RustifiedType {
 	} else if (f & ts.TypeFlags.Substitution) {
 		return UnknownRustifiedType;
 	} else if (f & ts.TypeFlags.NonPrimitive) {
-		return AnyRefRustifiedType;
+		return UnknownRustifiedType;
 	} else {
 		return UnknownRustifiedType;
 	}
@@ -1946,23 +1897,26 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string,
 	writeln("#[macro_use]");
 	writeln("extern crate stdweb;");
 	writeln("");
-	writeln("pub struct Any(pub ::stdweb::Value);");
+	writeln("pub struct Any<T: ::stdweb::JsSerialize>(pub T);");
 	writeln("");
-	emitImplJsSerializeForType("Any", "self.0", writeln);
-	writeln("pub trait ToAny : ::stdweb::JsSerialize {");
-	writeln("\tfn to_any(self) -> Any;");
+	writeln("#[doc(hidden)]");
+	writeln("impl<T: ::stdweb::JsSerialize> ::stdweb::private::JsSerialize for Any<T> {");
+	writeln("\t#[doc(hidden)]");
+	writeln("\tfn _into_js< 'a >( &'a self ) -> ::stdweb::private::SerializedValue< 'a > {");
+	writeln("\t\tself.0._into_js()");
+	writeln("\t}");
 	writeln("}");
 	writeln("");
-	writeln("pub struct AnyRef(pub ::stdweb::Reference);");
-	writeln("");
-	emitImplToAnyForType("AnyRef", "::stdweb::Value::Reference(self.0)", writeln);
-	emitImplJsSerializeForType("AnyRef", "self.0", writeln);
-	writeln("pub trait ToAnyRef : ToAny {");
-	writeln("\tfn to_any_ref(self) -> AnyRef;");
+	writeln("pub trait AsAny : Sized + ::stdweb::JsSerialize {");
+	writeln("\tfn as_any(self) -> Any<Self>;");
 	writeln("}");
 	writeln("");
-	emitImplToAnyForType("::stdweb::Value", "self", writeln);
-	emitImplToAnyAndAnyRefForType("::stdweb::Reference", "self", writeln);
+	writeln("impl<T> AsAny for T where T: ::stdweb::JsSerialize {");
+	writeln("\tfn as_any(self) -> Any<T> {");
+	writeln("\t\tAny(self)");
+	writeln("\t}");
+	writeln("}");
+	writeln("");
 	writeln("fn __js_value_into_undefined(val: ::stdweb::Value) -> ::stdweb::Undefined {");
 	writeln("\tif let ::stdweb::Value::Undefined = val {");
 	writeln("\t\t::stdweb::Undefined");
@@ -2034,8 +1988,7 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string,
 	writeln("");
 	writeln("impl __JsCallable for __UntypedJsFn {}");
 	writeln("impl<'a> __JsCallable for &'a __UntypedJsFn {}");
-	writeln("impl __JsCallable for Any {}");
-	writeln("impl __JsCallable for AnyRef {}");
+	writeln("impl<T: ::stdweb::JsSerialize> __JsCallable for Any<T> {}");
 	writeln("");
 
 	context.closures.forEach((f) => {
@@ -2071,9 +2024,7 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string,
 		writeln("");
 		writeln("impl "+fTraitName+" for "+fStructName+" {}");
 		writeln("impl<'a> "+fTraitName+" for &'a "+fStructName+" {}");
-		writeln("");
-		writeln("impl "+fTraitName+" for Any {}");
-		writeln("impl "+fTraitName+" for AnyRef {}");
+		writeln("impl<T: ::stdweb::JsSerialize> "+fTraitName+" for Any<T> {}");
 		writeln("");
 	});
 
@@ -2098,8 +2049,8 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string,
 	context.rootNameSpace.emit(writeln, context);
 
 	writeln("pub mod prelude {");
-	writeln("\tpub use ToAny;");
-	writeln("\tpub use ToAnyRef;");
+	writeln("\tpub use Any;");
+	writeln("\tpub use AsAny;");
 	context.rootNameSpace.emitPrelude(indentAdder(writeln), context);
 	context.closures.forEach((f) => {
 		let fTraitName = f.getRustTypeName(true);
