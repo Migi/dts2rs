@@ -29,12 +29,19 @@ fn example_main() {
 
 	app.get_stage().addChild(&bunny);
 
-	app.get_ticker().add(js!(return function(delta) {
+	let update = move |delta: f64| {
+		bunny.set_rotation(bunny.get_rotation() + 0.01 * delta);
+	};
+
+	app.get_ticker().add(js!(return @{update};).as_any(), ::stdweb::Undefined, None);
+	//app.get_ticker().add(AsAny::as_any(update), ::stdweb::Undefined, None);
+
+	/*app.get_ticker().add(js!(return function(delta) {
 		// just for fun, let's rotate mr rabbit a little
 		// delta is 1 if running at 100% performance
 		// creates frame-independent transformation
 		@{bunny}.rotation += 0.1 * delta;
-	};).as_any(), ::stdweb::Undefined, None);
+	};).as_any(), ::stdweb::Undefined, None);*/
 }
 
 fn main() {

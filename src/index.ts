@@ -45,7 +45,7 @@ function indentAdder(writeln: (s:string) => void) : (s:string) => void {
 
 function emitImplJsSerializeForType(rustName: string, conversionToRef: string, writeln: (s:string) => void) {
 	writeln("#[doc(hidden)]");
-	writeln("impl ::stdweb::private::JsSerialize for "+rustName+" {");
+	writeln("impl ::stdweb::JsSerialize for "+rustName+" {");
 	writeln("\t#[doc(hidden)]");
 	writeln("\tfn _into_js< 'a >( &'a self ) -> ::stdweb::private::SerializedValue< 'a > {");
 	writeln("\t\t"+conversionToRef+"._into_js()");
@@ -1189,8 +1189,9 @@ class Namespace {
 	}
 }
 
-const CLASS_BASE_TRAITS = "::stdweb::private::JsSerialize";// + ::stdweb::private::JsSerializeOwned";
-const INTERFACE_BASE_TRAITS = "::stdweb::private::JsSerialize";// + ::stdweb::private::JsSerializeOwned";
+// TODO: remove these
+const CLASS_BASE_TRAITS = "::stdweb::JsSerialize";// + ::stdweb::JsSerializeOwned";
+const INTERFACE_BASE_TRAITS = "::stdweb::JsSerialize";// + ::stdweb::JsSerializeOwned";
 
 const rustKeywords = {
 	"_": true,
@@ -1922,7 +1923,7 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string,
 	writeln("pub struct Any<T: ::stdweb::JsSerialize>(pub T);");
 	writeln("");
 	writeln("#[doc(hidden)]");
-	writeln("impl<T: ::stdweb::JsSerialize> ::stdweb::private::JsSerialize for Any<T> {");
+	writeln("impl<T: ::stdweb::JsSerialize> ::stdweb::JsSerialize for Any<T> {");
 	writeln("\t#[doc(hidden)]");
 	writeln("\tfn _into_js< 'a >( &'a self ) -> ::stdweb::private::SerializedValue< 'a > {");
 	writeln("\t\tself.0._into_js()");
@@ -2050,7 +2051,7 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string,
 		writeln("");
 	});
 
-	/*outStr += "pub trait "+CLASS_BASE_TRAITS+" : ::stdweb::private::JsSerialize + ::stdweb::private::JsSerializeOwned {\n";
+	/*outStr += "pub trait "+CLASS_BASE_TRAITS+" : ::stdweb::JsSerialize + ::stdweb::JsSerializeOwned {\n";
 	outStr += "\tfn __get_jsref(&self) -> ::stdweb::Reference;\n";
 	outStr += "}\n";
 	outStr += "\n";
