@@ -624,8 +624,8 @@ class Variable {
 
 class Signature {
 	constructor(public args: Variable[], public returnType: RustifiedType, public returnJsType: string) {
-		let structName = this.getRustTypeName(false);
-		let traitName = this.getRustTypeName(true);
+		let structName = this.getRustTypeName("JsFn");
+		let traitName = this.getRustTypeName("JsCallable");
 		this.rustifiedType = {
 			fromJsValue: (ns: Namespace, s:string) => structName+"(__js_value_into_reference("+s+", \""+structName+"\"))",
 			structName: (ns: Namespace) => structName,
@@ -652,8 +652,8 @@ class Signature {
 		return true;
 	}
 
-	getRustTypeName(trait: boolean) : string {
-		let result = (trait ? "JsCallable" : "JsFn");
+	getRustTypeName(base: string) : string {
+		let result = base;
 		if (this.args.length > 0) {
 			result += "__";
 			let isFirstParam = true;
@@ -1629,9 +1629,9 @@ function collectSignature(signature: ts.Signature, context: Context) : Signature
 }
 
 function collectClosure(signature: Signature, context: Context) : RustifiedType {
-	let fnName = signature.getRustTypeName(false);
+	let fnName = signature.getRustTypeName("JsFn");
 	
-	let existing = context.closures.find((sig) => { return sig.getRustTypeName(false) == fnName; });
+	let existing = context.closures.find((sig) => { return sig.getRustTypeName("JsFn") == fnName; });
 
 	if (existing !== undefined) {
 		return existing.rustifiedType;
@@ -2003,6 +2003,38 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string,
 	writeln("\t}");
 	writeln("}");
 	writeln("");
+	writeln("pub struct FnHandle<Args, Out> {");
+	writeln("\t__js_ref: ::stdweb::Reference,");
+	writeln("\tphantom_args: ::std::marker::PhantomData<Args>,");
+	writeln("\tphantom_out: ::std::marker::PhantomData<Out>,");
+	writeln("}");
+	writeln("");
+	writeln("impl<Args: ::stdweb::JsSerialize, Out: ::stdweb::private::JsSerializeOwned> FnHandle<Args, Out> {");
+	writeln("\tpub fn from_fn(f: impl Fn(Args) -> Out) -> Self {");
+	writeln("\t\tSelf {");
+	writeln("\t\t\t__js_ref: __js_value_into_reference(js!(return @{f};), \"function (from a Rust Fn)\"),");
+	writeln("\t\t\tphantom_args: ::std::marker::PhantomData,");
+	writeln("\t\t\tphantom_out: ::std::marker::PhantomData,");
+	writeln("\t\t}");
+	writeln("\t}");
+	writeln("");
+	writeln("\tpub fn leak(self) {}");
+	writeln("}");
+	writeln("");
+	writeln("impl<Args, Out> Drop for FnHandle<Args, Out> {");
+	writeln("\tfn drop(&mut self) {");
+	writeln("\t\tjs!(@(no_return) @{&self.__js_ref}.drop());");
+	writeln("\t}");
+	writeln("}");
+	writeln("");
+	writeln("#[doc(hidden)]");
+	writeln("impl<Args, Out> ::stdweb::JsSerialize for FnHandle<Args, Out> {");
+	writeln("\t#[doc(hidden)]");
+	writeln("\tfn _into_js< 'a >( &'a self ) -> ::stdweb::private::SerializedValue< 'a > {");
+	writeln("\t\tself.__js_ref._into_js()");
+	writeln("\t}");
+	writeln("}");
+	writeln("");
 	writeln("pub struct __UntypedJsFn(::stdweb::Reference);");
 	writeln("");
 	emitRefTypeTraits("__UntypedJsFn", writeln);
@@ -2012,11 +2044,12 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string,
 	writeln("impl __JsCallable for __UntypedJsFn {}");
 	writeln("impl<'a> __JsCallable for &'a __UntypedJsFn {}");
 	writeln("impl<T: ::stdweb::JsSerialize> __JsCallable for Any<T> {}");
+	writeln("impl<Args, O> __JsCallable for FnHandle<Args, O> {}");
 	writeln("");
 
 	context.closures.forEach((f) => {
-		let fStructName = f.getRustTypeName(false);
-		let fTraitName = f.getRustTypeName(true);
+		let fStructName = f.getRustTypeName("JsFn");
+		let fTraitName = f.getRustTypeName("JsCallable");
 		writeln("pub struct "+fStructName+"(::stdweb::Reference);");
 		writeln("");
 		emitRefTypeTraits(fStructName, writeln);
@@ -2048,6 +2081,29 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string,
 		writeln("impl "+fTraitName+" for "+fStructName+" {}");
 		writeln("impl<'a> "+fTraitName+" for &'a "+fStructName+" {}");
 		writeln("impl<T: ::stdweb::JsSerialize> "+fTraitName+" for Any<T> {}");
+		let boundsStr = "";
+		let paramsStr = "";
+		for (let i = 0; i < f.args.length; i++) {
+			let argStr = f.args[i].type.inArgPosName(context.rootNameSpace);
+			if (argStr.substr(0,5) == "impl ") {
+				let bound = argStr.substr(5);
+				if (boundsStr != "") {
+					boundsStr += ", ";
+				}
+				boundsStr += "T"+i+": "+bound;
+
+				if (paramsStr != "") {
+					paramsStr += ", ";
+				}
+				paramsStr += "T"+i;
+			} else {
+				if (paramsStr != "") {
+					paramsStr += ", ";
+				}
+				paramsStr += argStr;
+			}
+		}
+		writeln("impl<"+(boundsStr == "" ? "" : boundsStr + ", ")+"O> "+fTraitName+" for FnHandle<("+paramsStr+"), O> {}");
 		writeln("");
 	});
 
@@ -2074,9 +2130,10 @@ function dts2rs(fileNames: string[], options: ts.CompilerOptions, outDir:string,
 	writeln("pub mod prelude {");
 	writeln("\tpub use Any;");
 	writeln("\tpub use AsAny;");
+	writeln("\tpub use FnHandle;");
 	context.rootNameSpace.emitPrelude(indentAdder(writeln), context);
 	context.closures.forEach((f) => {
-		let fTraitName = f.getRustTypeName(true);
+		let fTraitName = f.getRustTypeName("JsCallable");
 		writeln("\tpub use "+fTraitName+";");
 	});
 	writeln("}");

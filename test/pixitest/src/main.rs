@@ -33,7 +33,10 @@ fn example_main() {
 		bunny.set_rotation(bunny.get_rotation() + 0.01 * delta);
 	};
 
-	app.get_ticker().add(js!(return @{update};).as_any(), ::stdweb::Undefined, None);
+	let updateHandle = FnHandle::from_fn(update);
+
+	app.get_ticker().add(updateHandle, ::stdweb::Undefined, None);
+	//app.get_ticker().add(js!(return @{update};).as_any(), ::stdweb::Undefined, None);
 	//app.get_ticker().add(AsAny::as_any(update), ::stdweb::Undefined, None);
 
 	/*app.get_ticker().add(js!(return function(delta) {
