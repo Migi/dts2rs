@@ -1,243 +1,163 @@
-import * as ts from "typescript";
-import * as fs from "fs";
-import * as path from "path";
-import * as mkdirp from "mkdirp";
-import { escape, parse } from "querystring";
-import { StringLiteralLike } from "typescript";
+/// This file emits .rs code to be used with stdweb
 
-interface Context {
-	sourceFiles: string[],
-	checker: ts.TypeChecker,
-	rootNameSpace: Namespace,
-	closures: Signature[],
+import * as data from "./data";
+import * as util from "./util";
+
+enum FunctionKind {
+	METHOD,
+	CONSTRUCTOR,
+	FREE_FUNCTION,
+	NAMESPACED_FUNCTION,
+	STATIC_METHOD
 }
 
-let diagnosticsHost : ts.FormatDiagnosticsHost = {
-	getCurrentDirectory: () => ts.sys.getCurrentDirectory(),
-	getNewLine: () => ts.sys.newLine,
-	getCanonicalFileName: (filename) => filename
-};
+function getRawSubClassOfTrait(theClass: data.ClassType) : string {
+	return util.escapeRustName("__SubClassOf_"+theClass.rustName);
+}
 
-function readTsConfig(tsConfigJsonFileName:string, basePath:string) : ts.ParsedCommandLine | undefined {
-	let configJson = ts.readConfigFile(tsConfigJsonFileName, ts.sys.readFile);
-	if (configJson.error !== undefined) {
-		console.error("Failed to read tsconfig.json file \""+tsConfigJsonFileName+"\"!");
-		console.error(ts.formatDiagnostic(configJson.error, diagnosticsHost));
-		return undefined;
+function getSubClassOfTrait(theClass: data.ClassType, ns: data.Namespace) : string {
+	return ns.getRustPathTo("__SubClassOf_"+theClass.rustName);
+}
+
+function getImplementsTrait(theInterface: data.InterfaceType) : string {
+	return util.escapeRustName("__Implements_"+theInterface.rustName);
+}
+
+function underscoreEscapeSignature(base: string, type: data.FunctionType) : string {
+	let result = base;
+	if (type.args.length > 0) {
+		result += "__";
+		let isFirstParam = true;
+		type.args.forEach((arg) => {
+			if (!isFirstParam) {
+				result += "_";
+			}
+			isFirstParam = false;
+			result += data.getTypeShortName(arg.type);
+		});
 	}
-	let config = ts.parseJsonConfigFileContent(configJson, ts.sys, basePath);
-	return config;
+	result += "__"+data.getTypeShortName(type.returnType);
+	return result;
 }
 
-function syntaxKindToName(kind: ts.SyntaxKind) {
-    return (<any>ts).SyntaxKind[kind];
-}
-
-function indentAdder(writeln: (s:string) => void) : (s:string) => void {
-	return (s) => {
-		if (s.length == 0) {
-			writeln("");
-		} else {
-			writeln("\t"+s);
-		}
-	};
-}
-
-function emitImplJsSerializeForType(rustName: string, conversionToRef: string, writeln: (s:string) => void) {
-	writeln("#[doc(hidden)]");
-	writeln("impl ::stdweb::JsSerialize for "+rustName+" {");
-	writeln("\t#[doc(hidden)]");
-	writeln("\tfn _into_js< 'a >( &'a self ) -> ::stdweb::private::SerializedValue< 'a > {");
-	writeln("\t\t"+conversionToRef+"._into_js()");
-	writeln("\t}");
-	writeln("}");
-	writeln("");
-}
-
-// emits ::stdweb::JsSerialize for a type that is a 1-element tuple with a ::stdweb::Reference in it
-function emitRefTypeTraits(rustName: string, writeln: (s:string) => void) {
-	emitImplJsSerializeForType(rustName, "self.0", writeln);
-}
-
-function rustifiedTypesAreSame(t1: RustifiedType, t2: RustifiedType, context: Context) : boolean {
-	return (t1 == t2 || t1.structName(context.rootNameSpace) == t2.structName(context.rootNameSpace));
-}
-
-class ClassOrInterface {
-	constructor(public symbol: ts.Symbol, public type: ts.InterfaceType, public namespace: Namespace, public context: Context) {
-		this.name = symbol.name;
-		this.rustName = escapeRustName(this.name);
-		this.directImpls = [];
-
-		this.methods = [];
-		this._resolvedMethods = [];
-		this.properties = [];
-	}
-
-	methods: Function[];
-	_resolvedMethods: Function[];
-	properties: Variable[];
-
-	addMethod(f:Function, context: Context) {
-		for (let existingF of this.methods) {
-			if (f.isSameAs(existingF, context)) {
-				return;
+function getInArgPosName(type: data.Type, ns: data.Namespace) : string {
+	switch (type.kind) {
+		case "any": return "impl ::stdweb::JsSerialize";
+		case "unknown": return "impl ::stdweb::JsSerialize";
+		case "number": return "f64";
+		case "string": return "impl AsRef<str> + stdweb::JsSerialize";
+		case "bool": return "bool";
+		case "symbol": return "::stdweb::Symbol";
+		case "undefined": return "::stdweb::Undefined";
+		case "null": return "::stdweb::Null";
+		case "void": return "()";
+		case "never": return "()"; // change this when rust never types are stabilized
+		case "optional": {
+			if (type.subtype.isNullable) {
+				return getStructName(type.subtype, ns);
+			} else {
+				return "Option<"+getStructName(type.subtype, ns)+">";
 			}
 		}
-		this.methods.push(f);
+		case "class": return "impl "+getSubClassOfTrait(type);
+		case "interface": return type.rustName;
+		case "function": return underscoreEscapeSignature("JsFn", type);
+		default: {
+			let exhaustive : never = type;
+			return exhaustive;
+		}
 	}
+}
 
-	getResolvedMethods() : Function[] {
-		return __resolveFunctionNames(this.methods, this._resolvedMethods);
-	}
-
-	pushDirectImpl(i:Interface) {
-		for (let ownI of this.directImpls) {
-			if (ownI.name == i.name) {
-				return;
+function getStructName(type: data.Type, ns: data.Namespace) : string {
+	switch (type.kind) {
+		case "any": return "Any<::stdweb::Value>";
+		case "unknown": return "::stdweb::Value";
+		case "number": return "f64";
+		case "string": return "String";
+		case "bool": return "bool";
+		case "symbol": return "::stdweb::Symbol";
+		case "undefined": return "::stdweb::Undefined";
+		case "null": return "::stdweb::Null";
+		case "void": return "()";
+		case "never": return "()"; // change this when rust never types are stabilized
+		case "optional": {
+			if (type.subtype.isNullable) {
+				return getStructName(type.subtype, ns);
+			} else {
+				return "Option<"+getStructName(type.subtype, ns)+">";
 			}
 		}
-		this.directImpls.push(i);
+		case "class": return type.rustName;
+		case "interface": return type.rustName;
+		case "function": return underscoreEscapeSignature("JsFn", type);
+		default: {
+			let exhaustive : never = type;
+			return exhaustive;
+		}
+	}
+}
+
+class StdwebEmitter {
+	private emitImplJsSerializeForType(rustName: string, conversionToRef: string, writeln: (s:string) => void) {
+		writeln("#[doc(hidden)]");
+		writeln("impl ::stdweb::JsSerialize for "+rustName+" {");
+		writeln("\t#[doc(hidden)]");
+		writeln("\tfn _into_js< 'a >( &'a self ) -> ::stdweb::private::SerializedValue< 'a > {");
+		writeln("\t\t"+conversionToRef+"._into_js()");
+		writeln("\t}");
+		writeln("}");
+		writeln("");
 	}
 
-	protected emitDocs(writeln: (s:string) => void, context: Context) {
-		let docs = this.symbol.getDocumentationComment(context.checker);
-		for (const docLine of docs) {
+	// emits ::stdweb::JsSerialize for a type that is a 1-element tuple with a ::stdweb::Reference in it
+	private emitRefTypeTraits(rustName: string, writeln: (s:string) => void) {
+		this.emitImplJsSerializeForType(rustName, "self.0", writeln);
+	}
+	
+	emitClass(theClass: data.ClassType, writeln: (s:string) => void) : void {
+		let subClassOfTrait = StdwebEmitter.getSubClassOfTrait(theClass);
+
+		for (const docLine of theClass.docLines) {
 			writeln("/// "+docLine);
 		}
-	}
-
-	name: string;
-	rustName: string;
-	directImpls: Interface[];
-}
-
-class Class extends ClassOrInterface {
-	constructor(public symbol: ts.Symbol, public type: ts.InterfaceType, public namespace: Namespace, public context: Context) {
-		super(symbol, type, namespace, context);
-		let checker = context.checker;
-
-		this.subClassOfTrait = escapeRustName("__SubClassOf_"+symbol.name);
-		this.superClass = undefined;
-
-		this.rustifiedType = {
-			fromJsValue: (ns: Namespace, s:string) => ns.getRustPathTo(this.namespace, this.rustName)+"(__js_value_into_reference("+s+", \""+this.rustName+"\"))",
-			structName: (ns: Namespace) => ns.getRustPathTo(this.namespace, this.rustName),
-			inArgPosName: (ns: Namespace) => "impl "+ns.getRustPathTo(this.namespace, this.subClassOfTrait),
-			shortName: this.rustName,
-			isNullable: false
-		}
-
-		this.constructors = [];
-		this._resolvedConstructors = [];
-		this.staticFunctions = [];
-		this._resolvedStaticFunctions = [];
-	}
-
-	subClassOfTrait: string;
-	superClass: Class | undefined;
-	rustifiedType: RustifiedType;
-	private constructors: Function[];
-	_resolvedConstructors: Function[];
-	private staticFunctions: Function[];
-	_resolvedStaticFunctions: Function[];
-
-	addConstructor(f:Function, context: Context) {
-		for (let existingF of this.constructors) {
-			if (f.isSameAs(existingF, context)) {
-				return;
-			}
-		}
-		this.constructors.push(f);
-	}
-
-	addStaticMethod(f:Function, context: Context) {
-		for (let existingF of this.staticFunctions) {
-			if (f.isSameAs(existingF, context)) {
-				return;
-			}
-		}
-		this.staticFunctions.push(f);
-	}
-
-	getResolvedConstructors() : Function[] {
-		return __resolveFunctionNames(this.constructors, this._resolvedConstructors);
-	}
-
-	getResolvedStaticFunctions() : Function[] {
-		return __resolveFunctionNames(this.staticFunctions, this._resolvedStaticFunctions);
-	}
-
-	forEachSuperClass(cb: (i:Class) => void) {
-		if (this.superClass !== undefined) {
-			this.superClass.forEachSuperClass(cb);
-			cb(this.superClass);
-		}
-	}
-
-	forEachSuperImpl(cb: (i:Interface) => void) {
-		let visited = new Set<Interface>();
-		function rec(node:ClassOrInterface) {
-			for (let i of node.directImpls) {
-				if (!visited.has(i)) {
-					visited.add(i);
-					rec(i);
-					cb(i);
-				}
-			}
-		}
-		this.forEachSuperClass((c) => { rec(c); });
-		rec(this);
-	}
-
-	emit(writeln: (s:string) => void, context: Context) : void {
-		//console.log(this.methods);
-		let checker = context.checker;
-		this.emitDocs(writeln, context);
-		writeln("pub struct "+this.rustName+"(pub ::stdweb::Reference);");
+		writeln("pub struct "+theClass.rustName+"(pub ::stdweb::Reference);");
 		writeln("");
-		writeln("pub trait "+this.subClassOfTrait+":");
-		writeln("\t"+CLASS_BASE_TRAITS+" +");
-		if (this.superClass !== undefined) {
-			writeln("\t"+this.namespace.getRustPathTo(this.superClass.namespace, this.superClass.subClassOfTrait)+" +");
+		writeln("pub trait "+subClassOfTrait+":");
+		writeln("\t::stdweb::JsSerialize +");
+		if (theClass.superClass !== undefined) {
+			writeln("\t"+theClass.namespace.getRustPathTo(theClass.superClass.namespace, StdwebEmitter.getSubClassOfTrait(theClass.superClass))+" +");
 		}
-		for (let i of this.directImpls) {
-			writeln("\t"+this.namespace.getRustPathTo(i.namespace, i.implementsTrait)+" +");
+		for (let i of theClass.directImpls) {
+			writeln("\t"+theClass.namespace.getRustPathTo(i.namespace, StdwebEmitter.getImplementsTrait(i))+" +");
 		}
 
 		let dontOutputThese = new Set<string>();
-		this.forEachSuperClass((c) => {
-			c.methods.forEach((f) => {
-				dontOutputThese.add(f.rustName);
+		theClass.forEachSuperClass((c) => {
+			c.methods.forEachResolvedFunction((f) => {
+				dontOutputThese.add(f.f.unresolvedRustName);
 			});
 			c.properties.forEach((p) => {
 				dontOutputThese.add("get_"+p.rustName);
 				dontOutputThese.add("set_"+p.rustName);
 			});
 		});
-		this.forEachSuperImpl((i) => {
-			i.methods.forEach((f) => {
-				dontOutputThese.add(f.rustName);
+		theClass.forEachSuperImpl((i) => {
+			i.methods.forEachResolvedFunction((f) => {
+				dontOutputThese.add(f.f.unresolvedRustName);
 			});
 			i.properties.forEach((p) => {
 				dontOutputThese.add("get_"+p.rustName);
 				dontOutputThese.add("set_"+p.rustName);
 			});
 		});
-
-		/*this.forEachSuperClass((c) => {
-			writeln("\t"+this.namespace.getRustPathTo(c.namespace, c.subClassOfTrait)+" +");
-		});
-		this.forEachSuperImpl((i) => {
-			writeln("\t"+this.namespace.getRustPathTo(i.namespace, i.implementsTrait)+" +");
-		});*/
 		writeln("{");
-		this.getResolvedMethods().forEach((method) => {
-			if (method.originalRustName !== undefined && !dontOutputThese.has(method.originalRustName)) {
-				method.emit(indentAdder(writeln), FunctionKind.METHOD, true, this.namespace, context);
+		theClass.methods.forEachResolvedFunction((method) => {
+			if (!dontOutputThese.has(method.f.unresolvedRustName)) {
+				this.emitMethod(util.indentAdder(writeln), FunctionKind.METHOD, true, theClass.namespace);
 			}
 		});
-		this.properties.forEach((prop) => {
+		theClass.properties.forEach((prop) => {
 			if (!dontOutputThese.has("get_"+prop.rustName)) {
 				writeln("\tfn get_"+prop.rustName+"(&self) -> "+prop.type.structName(this.namespace)+" {");
 				writeln("\t\t"+prop.type.fromJsValue(this.namespace, "js!(return @{self}."+prop.jsName+";)"));
