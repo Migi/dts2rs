@@ -1,9 +1,56 @@
 /// This file contains all functions for converting typescript types into the types in data.ts
-/// No file/path handling or tsconfig.json parsing is done here.
+/// This is the only file that talks to typescript
 
 import * as ts from "typescript";
 import * as data from "./data";
 import * as util from "./util";
+
+export 
+
+export function collectProgram(fileNames: string[], options: ts.CompilerOptions, outDir:string, packageName:string): data.Program {
+	let program = ts.createProgram(fileNames, options);
+
+	let checker = program.getTypeChecker();
+
+	let collector = new Collector(fileNames, checker, {});
+
+	// TODO: ambientModules is not actually used. Remove?
+	let ambientModules : ts.Symbol[] = [];
+	checker.getAmbientModules().forEach((m) => {
+		let shouldExport = false;
+		util.forEach(m.getDeclarations(), (mDecl) => {
+			let fileName = mDecl.getSourceFile().fileName;
+			if (fileNames.indexOf(fileName) >= 0) {
+				shouldExport = true;
+			}
+		});
+		if (shouldExport) {
+			util.forEach(checker.getExportsOfModule(m), (e) => {
+				collector.collectSymbol(e);
+			});
+			ambientModules.push(m);
+		}
+	});
+
+	let hasTopLevelExports = false;
+	for (const sourceFile of program.getSourceFiles()) {
+		if (fileNames.indexOf(sourceFile.fileName) < 0) {
+			continue;
+		}
+		let sfSymb = checker.getSymbolAtLocation(sourceFile);
+		if (sfSymb !== undefined) {
+			checker.getExportsOfModule(sfSymb).forEach((sfExp) => {
+				collector.collectSymbol(sfExp);
+				hasTopLevelExports = true;
+			});
+		}
+	}
+
+	return {
+		rootNameSpace: collector.rootNamespace,
+		closures: collector.closures
+	};
+}
 
 function makeTypeFromOnlyFlags(type:ts.Type) : data.Type {
 	let f = type.flags;
@@ -71,6 +118,16 @@ class Collector {
 		this.collectedSymbols = new Map<ts.Symbol, data.Type>();
 		this.rootNamespace = new data.Namespace(undefined, "");
 		this.closures = [];
+	}
+
+	getSymbolDocs(symbol: ts.Symbol) : string {
+		let docs = symbol.getDocumentationComment(this.checker);
+		return ts.displayPartsToString(docs);
+	}
+
+	getSignatureDocs(symbol: ts.Signature) : string {
+		let docs = symbol.getDocumentationComment(this.checker);
+		return ts.displayPartsToString(docs);
 	}
 
 	collectType(type:ts.Type) : data.Type {
@@ -229,14 +286,14 @@ class Collector {
 	collectFunction(symbol:ts.Symbol, type:ts.Type) : data.Type {
 		let [ns, name] = this.collectSymbolEnclosingNamespaces(symbol);
 
-		let docs = symbol.getDocumentationComment(this.checker);
+		let docs = this.getSymbolDocs(symbol);
 
 		let result : data.NamedFunction[] = [];
 
 		util.forEach(symbol.declarations, (decl) => {
 			let functionType = this.checker.getTypeOfSymbolAtLocation(symbol, decl);
 			util.forEach(functionType.getCallSignatures(), (callSig) => {
-				let f = new data.NamedFunction(util.escapeRustName(symbol.name), this.collectSignature(callSig), docs.map((s) => ""+s));
+				let f = new data.NamedFunction(util.escapeRustName(symbol.name), this.collectSignature(callSig), docs);
 				ns.addStaticFunction(f);
 				result.push(f);
 			});
@@ -265,8 +322,8 @@ class Collector {
 					obj.addMethod(new data.NamedFunction(
 						util.escapeRustName(memSym.name),
 						this.collectSignature(callSig),
-						callSig.getDocumentationComment(this.checker).map((s) => ""+s))
-					);
+						this.getSignatureDocs(callSig)
+					));
 				});
 				if (memSym.flags & ts.SymbolFlags.Property) {
 					let memRustType = this.collectType(memType);
@@ -289,7 +346,7 @@ class Collector {
 			return ns.classes[name];
 		}
 
-		let result = ns.getOrCreateClass(symbol.name, symbol.getDocumentationComment(this.checker).map((s) => ""+s));
+		let result = ns.getOrCreateClass(symbol.name, this.getSymbolDocs(symbol));
 
 		let bases = this.checker.getBaseTypes(type);
 		bases.forEach((base) => {
@@ -327,7 +384,7 @@ class Collector {
 								let memRustName = util.escapeRustName(memName);
 								util.forEach(memType.getCallSignatures(), (callSig) => {
 									let sig = this.collectSignature(callSig);
-									result.addStaticMethod(new data.NamedFunction(memRustName, sig, callSig.getDocumentationComment(this.checker).map((s) => ""+s)));
+									result.addStaticMethod(new data.NamedFunction(memRustName, sig, this.getSignatureDocs(callSig)));
 								});
 							}
 						}
@@ -353,7 +410,7 @@ class Collector {
 				let declNameType = this.checker.getTypeOfSymbolAtLocation(symbol, declName);
 				let constructors = declNameType.getConstructSignatures();
 				constructors.forEach((constructor) => {
-					result.addConstructor(new data.NamedFunction("new", this.collectSignature(constructor), constructor.getDocumentationComment(this.checker).map((s) => ""+s)));
+					result.addConstructor(new data.NamedFunction("new", this.collectSignature(constructor), this.getSignatureDocs(constructor)));
 				});
 			}
 		});
@@ -370,7 +427,7 @@ class Collector {
 			return ns.interfaces[name];
 		}
 
-		let result = ns.getOrCreateInterface(symbol.name, symbol.getDocumentationComment(this.checker).map(s => ""+s));
+		let result = ns.getOrCreateInterface(symbol.name, this.getSymbolDocs(symbol));
 
 		let bases = this.checker.getBaseTypes(type);
 		bases.forEach((base) => {
@@ -397,4 +454,21 @@ function parseFQN(fqn:string) : string[] {
 			return part;
 		}
 	}).map(util.escapeRustName);
+}
+
+export function readTsConfig(tsConfigJsonFileName:string, basePath:string) : ts.ParsedCommandLine | undefined {
+	let diagnosticsHost : ts.FormatDiagnosticsHost = {
+		getCurrentDirectory: () => ts.sys.getCurrentDirectory(),
+		getNewLine: () => ts.sys.newLine,
+		getCanonicalFileName: (filename) => filename
+	};
+
+	let configJson = ts.readConfigFile(tsConfigJsonFileName, ts.sys.readFile);
+	if (configJson.error !== undefined) {
+		console.error("Failed to read tsconfig.json file \""+tsConfigJsonFileName+"\"!");
+		console.error(ts.formatDiagnostic(configJson.error, diagnosticsHost));
+		return undefined;
+	}
+	let config = ts.parseJsonConfigFileContent(configJson, ts.sys, basePath);
+	return config;
 }

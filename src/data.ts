@@ -1,110 +1,115 @@
 import * as util from "./util";
 
+export interface Program {
+	rootNameSpace: Namespace,
+	closures: FunctionType[]
+};
+
 export type Type = AnyType | UnknownType | NumberType | StringType | BoolType | SymbolType | UndefinedType | NullType | UnitType | NeverType | OptionalType | ClassType | InterfaceType | FunctionType;
 
 export interface AnyType {
 	kind: "any",
-	isNullable: true
+	canBeUndefined: true
 }
 export const Any: AnyType = {
 	kind: "any",
-	isNullable: true
+	canBeUndefined: true
 }
 
 export interface UnknownType {
 	kind: "unknown",
-	isNullable: true
+	canBeUndefined: true
 }
 export const Unknown: UnknownType = {
 	kind: "unknown",
-	isNullable: true
+	canBeUndefined: true
 }
 
 export interface NumberType {
 	kind: "number",
-	isNullable: true
+	canBeUndefined: false
 }
 export const Number: NumberType = {
 	kind: "number",
-	isNullable: true
+	canBeUndefined: false
 }
 
 export interface StringType {
 	kind: "string",
-	isNullable: false
+	canBeUndefined: false
 }
 export const String: StringType = {
 	kind: "string",
-	isNullable: false
+	canBeUndefined: false
 }
 
 export interface BoolType {
 	kind: "bool",
-	isNullable: false
+	canBeUndefined: false
 }
 export const Bool: BoolType = {
 	kind: "bool",
-	isNullable: false
+	canBeUndefined: false
 }
 
 export interface SymbolType {
 	kind: "symbol",
-	isNullable: false
+	canBeUndefined: false
 }
 export const Symbol: SymbolType = {
 	kind: "symbol",
-	isNullable: false
+	canBeUndefined: false
 }
 
 export interface UndefinedType {
 	kind: "undefined",
-	isNullable: true
+	canBeUndefined: true
 }
 export const Undefined: UndefinedType = {
 	kind: "undefined",
-	isNullable: true
+	canBeUndefined: true
 }
 
 export interface NullType {
 	kind: "null",
-	isNullable: true
+	canBeUndefined: false
 }
 export const Null: NullType = {
 	kind: "null",
-	isNullable: true
+	canBeUndefined: false
 }
 
 export interface UnitType {
 	kind: "void",
-	isNullable: false // not sure
+	canBeUndefined: false
 }
 export const Unit: UnitType = {
 	kind: "void",
-	isNullable: false
+	canBeUndefined: false
 }
 
 export interface NeverType {
 	kind: "never",
-	isNullable: true
+	canBeUndefined: false
 }
 export const Never: NeverType = {
 	kind: "never",
-	isNullable: true
+	canBeUndefined: false
 }
 
 export interface OptionalType {
 	kind: "optional";
 	subtype: Type;
-	isNullable: true;
+	canBeUndefined: true;
 }
 
 export class Optional {
 	constructor(public subtype: Type) {
 		this.kind = "optional";
-		this.isNullable = true;
+		this.canBeUndefined = true;
 	}
 	kind: "optional";
-	isNullable: true;
+	canBeUndefined: true;
 }
 
 export function getTypeShortName(t: Type) : string {
@@ -191,6 +196,10 @@ export class ListOfFunctions {
 		this.cachedResolvedFunctions = undefined;
 	}
 
+	forEachUnresolvedFunction(cb: (f: NamedFunction) => void) {
+		this.functions.forEach(cb);
+	}
+
 	forEachResolvedFunction(cb: (f: NameResolvedFunction) => void) {
 		this.getResolvedFunctions().forEach(cb);
 	}
@@ -234,19 +243,19 @@ export class ListOfFunctions {
 }
 
 export class ClassOrInterface {
-	constructor(public jsName: string, public namespace: Namespace, public docLines: string[]) {
+	constructor(public jsName: string, public namespace: Namespace, public docs: string) {
 		this.rustName = util.escapeRustName(this.jsName);
 		this.directImpls = [];
 		this.methods = new ListOfFunctions();
 		this.properties = [];
-		this.isNullable = false;
+		this.canBeUndefined = false;
 	}
 
 	rustName: string;
 	directImpls: InterfaceType[];
 	methods: ListOfFunctions;
 	properties: Variable[];
-	isNullable: false;
+	canBeUndefined: false;
 
 	cmp(other: ClassOrInterface) : number {
 		if (this.rustName != other.rustName) {
@@ -271,8 +280,8 @@ export class ClassOrInterface {
 }
 
 export class ClassType extends ClassOrInterface {
-	constructor(jsName: string, public namespace: Namespace, docLines: string[]) {
-		super(jsName, namespace, docLines);
+	constructor(jsName: string, public namespace: Namespace, docs: string) {
+		super(jsName, namespace, docs);
 		this.superClass = undefined;
 		this.kind = "class";
 		this.constructors = new ListOfFunctions();
@@ -316,8 +325,8 @@ export class ClassType extends ClassOrInterface {
 }
 
 export class InterfaceType extends ClassOrInterface {
-	constructor(jsName: string, public namespace: Namespace, docLines: string[]) {
-		super(jsName, namespace, docLines);
+	constructor(jsName: string, public namespace: Namespace, docs: string) {
+		super(jsName, namespace, docs);
 		this.kind = "interface";
 	}
 
@@ -358,11 +367,11 @@ export class Variable {
 export class FunctionType {
 	constructor(public args: Variable[], public returnType: Type, public returnJsType: string) {
 		this.kind = "function";
-		this.isNullable = false;
+		this.canBeUndefined = false;
 	}
 
 	kind: "function";
-	isNullable: false;
+	canBeUndefined: false;
 
 	isSameAs(other: FunctionType) : boolean {
 		return this.cmp(other) == 0;
@@ -387,7 +396,7 @@ export class NameResolvedFunction {
 }
 
 export class NamedFunction {
-	constructor(public unresolvedRustName: string, public signature: FunctionType, public docLines: string[]) {}
+	constructor(public unresolvedRustName: string, public signature: FunctionType, public docs: string) {}
 	
 	isSameAs(other: NamedFunction) : boolean {
 		return this.cmp(other) == 0;
@@ -419,7 +428,7 @@ export class Namespace {
 	subNamespaces: {[name:string]: Namespace};
 	classes: {[name:string]: ClassType};
 	interfaces: {[name:string]: InterfaceType};
-	private staticFunctions: ListOfFunctions;
+	staticFunctions: ListOfFunctions;
 
 	cmp(other: Namespace) : number {
 		return this.toStringFull().localeCompare(other.toStringFull(), "en");
@@ -466,12 +475,26 @@ export class Namespace {
 		return this.getOrCreateItemOfType(jsName, this.subNamespaces, () => new Namespace(this, jsName));
 	}
 
-	getOrCreateClass(jsName: string, docLines: string[]) : ClassType {
-		return this.getOrCreateItemOfType(jsName, this.classes, () => new ClassType(jsName, this, docLines));
+	getOrCreateClass(jsName: string, docs: string) : ClassType {
+		return this.getOrCreateItemOfType(jsName, this.classes, () => new ClassType(jsName, this, docs));
 	}
 
-	getOrCreateInterface(jsName: string, docLines: string[]) : InterfaceType {
-		return this.getOrCreateItemOfType(jsName, this.interfaces, () => new InterfaceType(jsName, this, docLines));
+	getOrCreateInterface(jsName: string, docs: string) : InterfaceType {
+		return this.getOrCreateItemOfType(jsName, this.interfaces, () => new InterfaceType(jsName, this, docs));
+	}
+
+	getFullyQualifiedPath() : string {
+		let result = "";
+		let node : Namespace | undefined = this;
+		while (node !== undefined) {
+			result = "::"+node.rustName+result;
+			node = node.parent;
+		}
+		return result;
+	}
+
+	getFullyQualifiedPathToMember(itemName: string) : string {
+		return this.getFullyQualifiedPath()+"::"+itemName;
 	}
 
 	getRustPathTo(other: Namespace, itemName: string) : string {
