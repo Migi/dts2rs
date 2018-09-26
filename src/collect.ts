@@ -5,9 +5,31 @@ import * as ts from "typescript";
 import * as data from "./data";
 import * as util from "./util";
 
-export 
+export function collectProgramInDir(dir: string): data.Program {
+	let tsconfigFile = dir+"/tsconfig.json";
+	let dtsFile = dir+"/index.d.ts";
+	let config = readTsConfig(tsconfigFile, dir);
+	return collectProgram([dtsFile], config.options);
+}
 
-export function collectProgram(fileNames: string[], options: ts.CompilerOptions, outDir:string, packageName:string): data.Program {
+export function readTsConfig(tsConfigJsonFileName:string, basePath:string) : ts.ParsedCommandLine {
+	let diagnosticsHost : ts.FormatDiagnosticsHost = {
+		getCurrentDirectory: () => ts.sys.getCurrentDirectory(),
+		getNewLine: () => ts.sys.newLine,
+		getCanonicalFileName: (filename) => filename
+	};
+
+	let configJson = ts.readConfigFile(tsConfigJsonFileName, ts.sys.readFile);
+	if (configJson.error !== undefined) {
+		console.error("Failed to read tsconfig.json file \""+tsConfigJsonFileName+"\"!");
+		console.error(ts.formatDiagnostic(configJson.error, diagnosticsHost));
+		throw "ConfigParseError";
+	}
+	let config = ts.parseJsonConfigFileContent(configJson, ts.sys, basePath);
+	return config;
+}
+
+export function collectProgram(fileNames: string[], options: ts.CompilerOptions): data.Program {
 	let program = ts.createProgram(fileNames, options);
 
 	let checker = program.getTypeChecker();
@@ -454,21 +476,4 @@ function parseFQN(fqn:string) : string[] {
 			return part;
 		}
 	}).map(util.escapeRustName);
-}
-
-export function readTsConfig(tsConfigJsonFileName:string, basePath:string) : ts.ParsedCommandLine | undefined {
-	let diagnosticsHost : ts.FormatDiagnosticsHost = {
-		getCurrentDirectory: () => ts.sys.getCurrentDirectory(),
-		getNewLine: () => ts.sys.newLine,
-		getCanonicalFileName: (filename) => filename
-	};
-
-	let configJson = ts.readConfigFile(tsConfigJsonFileName, ts.sys.readFile);
-	if (configJson.error !== undefined) {
-		console.error("Failed to read tsconfig.json file \""+tsConfigJsonFileName+"\"!");
-		console.error(ts.formatDiagnostic(configJson.error, diagnosticsHost));
-		return undefined;
-	}
-	let config = ts.parseJsonConfigFileContent(configJson, ts.sys, basePath);
-	return config;
 }

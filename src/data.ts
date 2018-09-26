@@ -223,7 +223,7 @@ export class ListOfFunctions {
 
 		let alreadyOutputted = new Set<string>();
 		while (notResolvedYet.length > 0) {
-			notResolvedYet.filter((resolver) => {
+			notResolvedYet = notResolvedYet.filter((resolver) => {
 				let nameIter = resolver.nameGen.next();
 				console.assert(!nameIter.done);
 				let name = nameIter.value;
