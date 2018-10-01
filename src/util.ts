@@ -34,16 +34,6 @@ export function numToAbc(num:number) : string {
 	return result;
 }
 
-export function indentAdder(writeln: (s:string) => void) : (s:string) => void {
-	return (s) => {
-		if (s.length == 0) {
-			writeln("");
-		} else {
-			writeln("\t"+s);
-		}
-	};
-}
-
 export const rustKeywords = {
 	"_": true,
 	"as": true,
@@ -129,4 +119,36 @@ export function escapeRustName(name:string) : string {
 		}
 	}
 	return newName;
+}
+
+export function constructString<R>(f: (addPart: (s: string) => void) => void) : string {
+	let result = "";
+	let addPart = (s:string) => {
+		result += s;
+	};
+	f(addPart);
+	return result;
+}
+
+export function constructCommaSeparatedString<R>(f: (addPart: (s: string) => void) => void) : string {
+	let result = "";
+	let addPart = (s:string) => {
+		if (result != "") {
+			result += ", ";
+		}
+		result += s;
+	};
+	f(addPart);
+	return result;
+}
+
+// TODO: deprecated
+export function indentAdder(writeln: (s:string) => void) : (s:string) => void {
+	return (s) => {
+		if (s.length == 0) {
+			writeln("");
+		} else {
+			writeln("\t"+s);
+		}
+	};
 }

@@ -315,7 +315,7 @@ class Collector {
 		util.forEach(symbol.declarations, (decl) => {
 			let functionType = this.checker.getTypeOfSymbolAtLocation(symbol, decl);
 			util.forEach(functionType.getCallSignatures(), (callSig) => {
-				let f = new data.NamedFunction(util.escapeRustName(symbol.name), this.collectSignature(callSig), docs);
+				let f = new data.NamedFunction(util.escapeRustName(symbol.name), symbol.name, this.collectSignature(callSig), docs);
 				ns.addStaticFunction(f);
 				result.push(f);
 			});
@@ -343,6 +343,7 @@ class Collector {
 				memType.getCallSignatures().forEach((callSig) => {
 					obj.addMethod(new data.NamedFunction(
 						util.escapeRustName(memSym.name),
+						memSym.name,
 						this.collectSignature(callSig),
 						this.getSignatureDocs(callSig)
 					));
@@ -406,7 +407,7 @@ class Collector {
 								let memRustName = util.escapeRustName(memName);
 								util.forEach(memType.getCallSignatures(), (callSig) => {
 									let sig = this.collectSignature(callSig);
-									result.addStaticMethod(new data.NamedFunction(memRustName, sig, this.getSignatureDocs(callSig)));
+									result.addStaticMethod(new data.NamedFunction(memRustName, memName, sig, this.getSignatureDocs(callSig)));
 								});
 							}
 						}
@@ -432,7 +433,7 @@ class Collector {
 				let declNameType = this.checker.getTypeOfSymbolAtLocation(symbol, declName);
 				let constructors = declNameType.getConstructSignatures();
 				constructors.forEach((constructor) => {
-					result.addConstructor(new data.NamedFunction("new", this.collectSignature(constructor), this.getSignatureDocs(constructor)));
+					result.addConstructor(new data.NamedFunction("new", "new", this.collectSignature(constructor), this.getSignatureDocs(constructor)));
 				});
 			}
 		});

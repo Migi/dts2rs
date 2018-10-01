@@ -64,3 +64,4 @@ test/pixi.js/output/
 test/pixitest/Cargo.lock
 test/pixitest/target/
 test/react/output/
+test/pixi.js/output2/

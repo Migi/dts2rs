@@ -251,7 +251,7 @@ function emitClass(writeln: (s:string) => void, theClass: data.ClassType) : void
 		emitFunction(util.indentAdder(writeln), constructor, FunctionKind.CONSTRUCTOR, true, theClass.namespace);
 	});
 	theClass.staticMethods.forEachResolvedFunction((staticMethod) => {
-		emitFunction(util.indentAdder(writeln), staticMethod, FunctionKind.CONSTRUCTOR, true, theClass.namespace);
+		emitFunction(util.indentAdder(writeln), staticMethod, FunctionKind.STATIC_METHOD, true, theClass.namespace);
 	});
 	writeln("}");
 	writeln("");

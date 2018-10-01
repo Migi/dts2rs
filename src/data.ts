@@ -180,10 +180,14 @@ function* iterateResolvedNames(f: NamedFunction) {
 export class ListOfFunctions {
 	private functions: NamedFunction[];
 	private cachedResolvedFunctions: undefined | NameResolvedFunction[];
+	private cachedUnresolvedNameMap: undefined | Map<string, NamedFunction[]>;
+	private cachedResolvedNameMap: undefined | Map<string, NameResolvedFunction[]>;
 
 	constructor() {
 		this.functions = [];
 		this.cachedResolvedFunctions = undefined;
+		this.cachedUnresolvedNameMap = undefined;
+		this.cachedResolvedNameMap = undefined;
 	}
 
 	add(f:NamedFunction) {
@@ -194,6 +198,8 @@ export class ListOfFunctions {
 		}
 		this.functions.push(f);
 		this.cachedResolvedFunctions = undefined;
+		this.cachedUnresolvedNameMap = undefined;
+		this.cachedResolvedNameMap = undefined;
 	}
 
 	forEachUnresolvedFunction(cb: (f: NamedFunction) => void) {
@@ -238,6 +244,42 @@ export class ListOfFunctions {
 		}
 
 		this.cachedResolvedFunctions = result;
+		return result;
+	}
+
+	getUnresolvedNameMap() : Map<string, NamedFunction[]> {
+		if (this.cachedUnresolvedNameMap !== undefined) {
+			return this.cachedUnresolvedNameMap;
+		}
+		let result = new Map<string, NamedFunction[]>();
+		this.functions.forEach((f) => {
+			let existing = result.get(f.unresolvedRustName);
+			if (existing !== undefined) {
+				existing.push(f);
+			} else {
+				let newArr = [f];
+				result.set(f.unresolvedRustName, newArr);
+			}
+		});
+		this.cachedUnresolvedNameMap = result;
+		return result;
+	}
+
+	getResolvedNameMap() : Map<string, NameResolvedFunction[]> {
+		if (this.cachedResolvedNameMap !== undefined) {
+			return this.cachedResolvedNameMap;
+		}
+		let result = new Map<string, NameResolvedFunction[]>();
+		this.getResolvedFunctions().forEach((f) => {
+			let existing = result.get(f.resolvedName);
+			if (existing !== undefined) {
+				existing.push(f);
+			} else {
+				let newArr = [f];
+				result.set(f.resolvedName, newArr);
+			}
+		});
+		this.cachedResolvedNameMap = result;
 		return result;
 	}
 }
@@ -415,7 +457,7 @@ export class NameResolvedFunction {
 }
 
 export class NamedFunction {
-	constructor(public unresolvedRustName: string, public signature: FunctionType, public docs: string) {}
+	constructor(public unresolvedRustName: string, public jsName: string, public signature: FunctionType, public docs: string) {}
 	
 	isSameAs(other: NamedFunction) : boolean {
 		return this.cmp(other) == 0;

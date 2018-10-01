@@ -4,6 +4,8 @@ import * as path from "path";
 import * as mkdirp from "mkdirp";
 import * as collect from "./collect";
 import * as stdweb_emit from "./stdweb_emit";
+import * as emit_wasm_bindgen from "./emit_wasm_bindgen";
+import * as codegen from "./codegen";
 
 let diagnosticsHost : ts.FormatDiagnosticsHost = {
 	getCurrentDirectory: () => ts.sys.getCurrentDirectory(),
@@ -32,8 +34,16 @@ function dts2rs(dir: string, outDir:string, packageName:string): void {
 	console.log("done collecting");
 
 	let libRsStr = "";
-	stdweb_emit.emitLibRs(s => { libRsStr += s+"\n"; console.log(s); }, program);
-	let cargoTomlStr = stdweb_emit.emitCargoToml(packageName);
+	let cg = new codegen.CodeGen(s => {
+		if (s == undefined) {
+			s = "";
+		}
+		libRsStr += s+"\n";
+		//console.log(s);
+	});
+	emit_wasm_bindgen.emitLibRs(cg, program);
+	//stdweb_emit.emitLibRs(s => { libRsStr += s+"\n"; console.log(s); }, program);
+	let cargoTomlStr = emit_wasm_bindgen.emitCargoToml(packageName);
 	
 	mkdirp.sync(path.join(outDir, "src"));
 	
@@ -43,16 +53,20 @@ function dts2rs(dir: string, outDir:string, packageName:string): void {
 		}
 	});
 
+	console.log("done writing Cargo.toml");
+
 	fs.writeFile(path.join(outDir, "src", "lib.rs"), libRsStr, undefined, (err) => {
 		if (err) {
 			console.error("Error writing lib.rs: "+err.message);
 		}
 	});
+
+	console.log("done writing lib.rs");
 }
 
 {
 	let testDir = "test/pixi.js";
-	let outDir = testDir+"/output";
+	let outDir = testDir+"/output2";
 	let packageName = "pixi-js";
 	dts2rs(testDir, outDir, packageName);
 }
