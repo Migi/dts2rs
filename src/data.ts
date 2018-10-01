@@ -389,6 +389,25 @@ export class FunctionType {
 		}
 		return cmpTypes(this.returnType, other.returnType);
 	}
+	
+	underscoreEscapeSignature(base: string) : string {
+		let result = base;
+		if (this.args.length > 0) {
+			if (base.length > 0) {
+				result += "__";
+			}
+			let isFirstParam = true;
+			this.args.forEach((arg) => {
+				if (!isFirstParam) {
+					result += "_";
+				}
+				isFirstParam = false;
+				result += getTypeShortName(arg.type);
+			});
+		}
+		result += "__"+getTypeShortName(this.returnType);
+		return result;
+	}
 }
 
 export class NameResolvedFunction {

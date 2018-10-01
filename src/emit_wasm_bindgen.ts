@@ -1,4 +1,4 @@
-/// This file emits .rs code to be used with stdweb
+/// This file emits .rs code to be used with wasm_bindgen
 
 import * as data from "./data";
 import * as util from "./util";
@@ -11,41 +11,16 @@ enum FunctionKind {
 	STATIC_METHOD
 }
 
-function getSubClassOfTraitName(theClass: data.ClassType) : string {
-	return util.escapeRustName("__SubClassOf_"+theClass.rustName);
-}
-
-function getImplementsTraitName(theInterface: data.InterfaceType) : string {
-	return util.escapeRustName("__Implements_"+theInterface.rustName);
-}
-
-function underscoreEscapeSignature(base: string, type: data.FunctionType) : string {
-	let result = base;
-	if (type.args.length > 0) {
-		result += "__";
-		let isFirstParam = true;
-		type.args.forEach((arg) => {
-			if (!isFirstParam) {
-				result += "_";
-			}
-			isFirstParam = false;
-			result += data.getTypeShortName(arg.type);
-		});
-	}
-	result += "__"+data.getTypeShortName(type.returnType);
-	return result;
-}
-
 function typeInArgPos(type: data.Type, curNS: data.Namespace) : string {
 	switch (type.kind) {
-		case "any": return "impl ::stdweb::JsSerialize";
-		case "unknown": return "impl ::stdweb::JsSerialize";
+		case "any": return "&::wasm_bindgen::JsValue";
+		case "unknown": return "&::wasm_bindgen::JsValue";
 		case "number": return "f64";
-		case "string": return "impl AsRef<str> + stdweb::JsSerialize";
+		case "string": return "&str";
 		case "bool": return "bool";
-		case "symbol": return "::stdweb::Symbol";
-		case "undefined": return "::stdweb::Undefined";
-		case "null": return "::stdweb::Null";
+		case "symbol": return "&::js_sys::Symbol";
+		case "undefined": return "&::wasm_bindgen::JsValue"; // wasm_bindgen has no type representing undefined
+		case "null": return "&::wasm_bindgen::JsValue"; // wasm_bindgen has no type representing null
 		case "void": throw "ERROR: can't have void as a function argument!";
 		case "never": throw "ERROR: can't have a never type as a function argument!";
 		case "optional": {
@@ -55,9 +30,9 @@ function typeInArgPos(type: data.Type, curNS: data.Namespace) : string {
 				return "Option<"+typeInArgPos(type.subtype, curNS)+">";
 			}
 		}
-		case "class": return "impl "+curNS.getRustPathTo(type.namespace, getSubClassOfTraitName(type));
-		case "interface": return "impl "+curNS.getRustPathTo(type.namespace, getImplementsTraitName(type));
-		case "function": return underscoreEscapeSignature("JsFn", type);
+		case "class": return "&"+curNS.getRustPathTo(type.namespace, type.rustName);
+		case "interface": return "impl "+curNS.getRustPathTo(type.namespace, type.rustName);
+		case "function": return "&::js_sys::Function";
 		default: {
 			let exhaustive : never = type;
 			return exhaustive;
@@ -67,14 +42,14 @@ function typeInArgPos(type: data.Type, curNS: data.Namespace) : string {
 
 function typeInReturnPos(type: data.Type, curNS: data.Namespace) : string {
 	switch (type.kind) {
-		case "any": return "Any<::stdweb::Value>";
-		case "unknown": return "::stdweb::Value";
+		case "any": return "::wasm_bindgen::JsValue";
+		case "unknown": return "::wasm_bindgen::JsValue";
 		case "number": return "f64";
-		case "string": return "String";
+		case "string": return "::wasm_bindgen::JsString";
 		case "bool": return "bool";
-		case "symbol": return "::stdweb::Symbol";
-		case "undefined": return "::stdweb::Undefined";
-		case "null": return "::stdweb::Null";
+		case "symbol": return "::js_sys::Symbol";
+		case "undefined": return "()"; // wasm_bindgen has no type representing undefined
+		case "null": return "()"; // wasm_bindgen has no type representing null
 		case "void": return "()";
 		case "never": return "()"; // change this when rust never types are stabilized
 		case "optional": {
@@ -86,62 +61,12 @@ function typeInReturnPos(type: data.Type, curNS: data.Namespace) : string {
 		}
 		case "class": return curNS.getRustPathTo(type.namespace, type.rustName);
 		case "interface": return curNS.getRustPathTo(type.namespace, type.rustName);
-		case "function": return underscoreEscapeSignature("JsFn", type);
+		case "function": return "::js_sys::Function";
 		default: {
 			let exhaustive : never = type;
 			return exhaustive;
 		}
 	}
-}
-
-function constructTypeFromJsValue(type: data.Type, curNS: data.Namespace, s: string) : string {
-	switch (type.kind) {
-		case "any": return "Any("+s+")";
-		case "unknown": return s;
-		case "number": return "__js_value_into_number("+s+")";
-		case "string": return "__js_value_into_string("+s+")";
-		case "bool": return "__js_value_into_bool("+s+")";
-		case "symbol": return "__js_value_into_symbol("+s+")";
-		case "undefined": return "__js_value_into_undefined("+s+")";
-		case "null": return "__js_value_into_null("+s+")";
-		case "void": return s+";";
-		case "never": return s+";";
-		case "optional": {
-			if (type.subtype.canBeUndefined) {
-				return constructTypeFromJsValue(type.subtype, curNS, s);
-			} else if (type.subtype.kind == "null") {
-				// this is a very weird type: an optional null. So it's either undefined or null.
-				// I suppose null should map to Some(null), and undefined should map to None?
-				return "match "+s+" { ::stdweb::Value::Undefined => None, ___other => Some("+constructTypeFromJsValue(type.subtype, curNS, "___other")+") }";
-			} else {
-				// in the regular case I will let null map to None though.
-				return "match "+s+" { ::stdweb::Value::Undefined | ::stdweb::Value::Null => None, ___other => Some("+constructTypeFromJsValue(type.subtype, curNS, "___other")+") }";
-			}
-		}
-		case "class": return curNS.getRustPathTo(type.namespace, type.rustName);
-		case "interface": return curNS.getRustPathTo(type.namespace, type.rustName);
-		case "function": return underscoreEscapeSignature("JsFn", type);
-		default: {
-			let exhaustive : never = type;
-			return exhaustive;
-		}
-	}
-}
-
-function emitImplJsSerializeForType(rustName: string, conversionToRef: string, writeln: (s:string) => void) {
-	writeln("#[doc(hidden)]");
-	writeln("impl ::stdweb::JsSerialize for "+rustName+" {");
-	writeln("\t#[doc(hidden)]");
-	writeln("\tfn _into_js< 'a >( &'a self ) -> ::stdweb::private::SerializedValue< 'a > {");
-	writeln("\t\t"+conversionToRef+"._into_js()");
-	writeln("\t}");
-	writeln("}");
-	writeln("");
-}
-
-// emits ::stdweb::JsSerialize for a type that is a 1-element tuple with a ::stdweb::Reference in it
-function emitRefTypeTraits(rustName: string, writeln: (s:string) => void) {
-	emitImplJsSerializeForType(rustName, "self.0", writeln);
 }
 
 function emitDocs(docs: string, writeln: (s:string) => void) : void {
@@ -155,40 +80,35 @@ function emitDocs(docs: string, writeln: (s:string) => void) : void {
 }
 
 function emitClass(writeln: (s:string) => void, theClass: data.ClassType) : void {
-	let subClassOfTrait = getSubClassOfTraitName(theClass);
-
 	emitDocs(theClass.docs, writeln);
-	writeln("pub struct "+theClass.rustName+"(pub ::stdweb::Reference);");
+
+	let typeSpecifiers = "";
+	theClass.forEachSuperClass((c) => {
+		if (typeSpecifiers != "") {
+			typeSpecifiers += ", ";
+		}
+		typeSpecifiers += "extends = "+c.rustName;
+	});
+
+	if (typeSpecifiers != "") {
+		writeln("#[wasm_bindgen("+typeSpecifiers+")]");
+	}
+	writeln("pub type "+theClass.rustName+";");
 	writeln("");
-	writeln("pub trait "+subClassOfTrait+":");
-	writeln("\t::stdweb::JsSerialize +");
-	if (theClass.superClass !== undefined) {
-		writeln("\t"+theClass.namespace.getRustPathTo(theClass.superClass.namespace, getSubClassOfTraitName(theClass.superClass))+" +");
-	}
-	for (let i of theClass.directImpls) {
-		writeln("\t"+theClass.namespace.getRustPathTo(i.namespace, getImplementsTraitName(i))+" +");
-	}
 
 	let dontOutputThese = new Set<string>();
 	theClass.forEachSuperClass((c) => {
-		/*c.methods.forEachUnresolvedFunction((f) => {
-			dontOutputThese.add(f.unresolvedRustName);
-		});*/
 		c.properties.forEach((p) => {
-			dontOutputThese.add("get_"+p.rustName);
+			dontOutputThese.add(p.rustName);
 			dontOutputThese.add("set_"+p.rustName);
 		});
 	});
 	theClass.forEachSuperImpl((i) => {
-		/*i.methods.forEachUnresolvedFunction((f) => {
-			dontOutputThese.add(f.unresolvedRustName);
-		});*/
 		i.properties.forEach((p) => {
-			dontOutputThese.add("get_"+p.rustName);
+			dontOutputThese.add(p.rustName);
 			dontOutputThese.add("set_"+p.rustName);
 		});
 	});
-
 	writeln("{");
 	theClass.methods.forEachResolvedFunction((method) => {
 		if (!dontOutputThese.has(method.f.unresolvedRustName)) {
