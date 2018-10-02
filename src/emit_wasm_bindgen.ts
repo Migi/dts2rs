@@ -32,7 +32,7 @@ function typeInArgPos(type: data.Type, curNS: data.Namespace) : string {
 			}
 		}
 		case "class": return "&"+curNS.getRustPathTo(type.namespace, type.rustName);
-		case "interface": return "impl "+curNS.getRustPathTo(type.namespace, type.rustName);
+		case "interface": return "&"+curNS.getRustPathTo(type.namespace, type.rustName);
 		case "function": return "&::js_sys::Function";
 		default: {
 			let exhaustive : never = type;
@@ -132,10 +132,10 @@ function emitClass(cg: codegen.CodeGen, theClass: data.ClassType) : void {
 				addSpecifier("js_name = "+theClass.jsName);
 			}
 			theClass.forEachSuperClass((c) => {
-				addSpecifier("extends = "+theClass.namespace.getRustPathTo(c.namespace, c.rustName));
+				addSpecifier("extends = \""+theClass.namespace.getRustPathTo(c.namespace, c.rustName)+"\"");
 			});
 			theClass.forEachSuperImpl((i) => {
-				addSpecifier("extends = "+theClass.namespace.getRustPathTo(i.namespace, i.rustName));
+				addSpecifier("extends = \""+theClass.namespace.getRustPathTo(i.namespace, i.rustName)+"\"");
 			});
 		});
 		cg.writeln("pub type "+theClass.rustName+";");
@@ -175,27 +175,10 @@ function emitClass(cg: codegen.CodeGen, theClass: data.ClassType) : void {
 						addSpecifier("js_class = "+theClass.jsName);
 					}
 				});
-				cg.writeln("pub fn set_"+prop.rustName+"(this: &"+theClass.rustName+", val: "+typeInReturnPos(prop.type, theClass.namespace)+";");
+				cg.writeln("pub fn set_"+prop.rustName+"(this: &"+theClass.rustName+", val: "+typeInReturnPos(prop.type, theClass.namespace)+");");
 				cg.writeln();
 			}
 		});
-		
-		cg.scope("impl ::std::ops::Deref for "+theClass.rustName+" {", (cg) => {
-			if (theClass.superClass === undefined) {
-				cg.writeln("type Target = ::wasm_bindgen::JsValue");
-				cg.writeln();
-				cg.scope("fn deref(&self) -> Self::Target {", (cg) => {
-					cg.writeln("self.as_ref()");
-				});
-			} else {
-				cg.writeln("type Target = "+theClass.namespace.getRustPathTo(theClass.superClass.namespace, theClass.superClass.rustName));
-				cg.writeln();
-				cg.scope("fn deref(&self) -> Self::Target {", (cg) => {
-					cg.writeln("JsCast::unchecked_from_js_ref(self.as_ref())");
-				});
-			}
-		});
-		cg.writeln();
 
 		theClass.constructors.forEachResolvedFunction((constructor) => {
 			emitFunction(cg, constructor, FunctionKind.CONSTRUCTOR, theClass.namespace, theClass);
@@ -203,6 +186,23 @@ function emitClass(cg: codegen.CodeGen, theClass: data.ClassType) : void {
 		theClass.staticMethods.forEachResolvedFunction((staticMethod) => {
 			emitFunction(cg, staticMethod, FunctionKind.STATIC_METHOD, theClass.namespace, theClass);
 		});
+	});
+	cg.writeln();
+		
+	cg.scope("impl ::std::ops::Deref for "+theClass.rustName+" {", (cg) => {
+		if (theClass.superClass === undefined) {
+			cg.writeln("type Target = ::wasm_bindgen::JsValue;");
+			cg.writeln();
+			cg.scope("fn deref(&self) -> &Self::Target {", (cg) => {
+				cg.writeln("self.as_ref()");
+			});
+		} else {
+			cg.writeln("type Target = "+theClass.namespace.getRustPathTo(theClass.superClass.namespace, theClass.superClass.rustName)+";");
+			cg.writeln();
+			cg.scope("fn deref(&self) -> &Self::Target {", (cg) => {
+				cg.writeln("JsCast::unchecked_from_js_ref(self.as_ref())");
+			});
+		}
 	});
 	cg.writeln();
 }
@@ -213,7 +213,7 @@ function emitInterface(cg: codegen.CodeGen, theInterface: data.InterfaceType) : 
 		emitDocs(cg, theInterface.docs);
 		emitSpecifiers(cg, (addSpecifier) => {
 			theInterface.forEachSuperImpl((i) => {
-				addSpecifier("extends = "+theInterface.namespace.getRustPathTo(i.namespace, i.rustName));
+				addSpecifier("extends = \""+theInterface.namespace.getRustPathTo(i.namespace, i.rustName)+"\"");
 			});
 		});
 		cg.writeln("pub type "+theInterface.rustName+";");
@@ -253,32 +253,32 @@ function emitInterface(cg: codegen.CodeGen, theInterface: data.InterfaceType) : 
 						addSpecifier("js_class = "+theInterface.jsName);
 					}
 				});
-				cg.writeln("pub fn set_"+prop.rustName+"(this: &"+theInterface.rustName+", val: "+typeInReturnPos(prop.type, theInterface.namespace)+";");
+				cg.writeln("pub fn set_"+prop.rustName+"(this: &"+theInterface.rustName+", val: "+typeInReturnPos(prop.type, theInterface.namespace)+");");
 				cg.writeln();
 			}
 		});
-		
-		if (theInterface.directImpls.length <= 1) {
-			cg.scope("impl ::std::ops::Deref for "+theInterface.rustName+" {", (cg) => {
-				if (theInterface.directImpls.length == 0) {
-					cg.writeln("type Target = ::wasm_bindgen::JsValue");
-					cg.writeln();
-					cg.scope("fn deref(&self) -> Self::Target {", (cg) => {
-						cg.writeln("self.as_ref()");
-					});
-				} else {
-					let theSuperInterface = theInterface.directImpls[0];
-					cg.writeln("type Target = "+theInterface.namespace.getRustPathTo(theSuperInterface.namespace, theSuperInterface.rustName));
-					cg.writeln();
-					cg.scope("fn deref(&self) -> Self::Target {", (cg) => {
-						cg.writeln("JsCast::unchecked_from_js_ref(self.as_ref())");
-					});
-				}
-			});
-			cg.writeln();
-		}
 	});
 	cg.writeln();
+		
+	if (theInterface.directImpls.length <= 1) {
+		cg.scope("impl ::std::ops::Deref for "+theInterface.rustName+" {", (cg) => {
+			if (theInterface.directImpls.length == 0) {
+				cg.writeln("type Target = ::wasm_bindgen::JsValue;");
+				cg.writeln();
+				cg.scope("fn deref(&self) -> &Self::Target {", (cg) => {
+					cg.writeln("self.as_ref()");
+				});
+			} else {
+				let theSuperInterface = theInterface.directImpls[0];
+				cg.writeln("type Target = "+theInterface.namespace.getRustPathTo(theSuperInterface.namespace, theSuperInterface.rustName)+";");
+				cg.writeln();
+				cg.scope("fn deref(&self) -> &Self::Target {", (cg) => {
+					cg.writeln("JsCast::unchecked_from_js_ref(self.as_ref())");
+				});
+			}
+		});
+		cg.writeln();
+	}
 
 	let allProps : data.Variable[] = [];
 	{
@@ -307,7 +307,7 @@ function emitInterface(cg: codegen.CodeGen, theInterface: data.InterfaceType) : 
 					addStrPart(prop.rustName+": "+typeInArgPos(prop.type, theInterface.namespace));
 				}
 			});
-		})+" -> "+theInterface.rustName+" {", (cg) => {
+		})+") -> "+theInterface.rustName+" {", (cg) => {
 			cg.writeln("let obj = ::js_sys::Object::new();");
 			allProps.forEach((prop) => {
 				if (!prop.isOptional) {
@@ -399,13 +399,18 @@ function emitNamespace(cg: codegen.CodeGen, theNamespace: data.Namespace) {
 		emitInterface(cg, theInterface);
 	});
 
-	if (theNamespace.parent == undefined) {
-		theNamespace.staticFunctions.forEachResolvedFunction((f) => {
-			emitFunction(cg, f, FunctionKind.FREE_FUNCTION, theNamespace);
-		});
-	} else {
-		theNamespace.staticFunctions.forEachResolvedFunction((f) => {
-			emitFunction(cg, f, FunctionKind.NAMESPACED_FUNCTION, theNamespace);
+	if (theNamespace.staticFunctions.count() > 0) {
+		cg.writeln("#[wasm_bindgen]");
+		cg.scope("extern {", (cg) => {
+			if (theNamespace.parent == undefined) {
+				theNamespace.staticFunctions.forEachResolvedFunction((f) => {
+					emitFunction(cg, f, FunctionKind.FREE_FUNCTION, theNamespace);
+				});
+			} else {
+				theNamespace.staticFunctions.forEachResolvedFunction((f) => {
+					emitFunction(cg, f, FunctionKind.NAMESPACED_FUNCTION, theNamespace);
+				});
+			}
 		});
 	}
 }
@@ -421,8 +426,8 @@ export function emitCargoToml(packageName: string) : string {
 	"crate-type = [\"cdylib\"]\n" +
 	"\n" + 
 	"[dependencies]\n" +
-	"wasm_bindgen = \"0.2.23\"\n" +
-	"js_sys = 0.3.0\n";
+	"wasm-bindgen = \"0.2.23\"\n" +
+	"js-sys = \"0.3.0\"\n";
 }
 
 export function emitLibRs(cg: codegen.CodeGen, program: data.Program) {

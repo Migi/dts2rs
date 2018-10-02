@@ -202,6 +202,10 @@ export class ListOfFunctions {
 		this.cachedResolvedNameMap = undefined;
 	}
 
+	count() : number {
+		return this.functions.length;
+	}
+
 	forEachUnresolvedFunction(cb: (f: NamedFunction) => void) {
 		this.functions.forEach(cb);
 	}
