@@ -95,7 +95,7 @@ export const rustKeywords = {
 	"union": true
 };
 
-export function escapeRustName(name:string) : string {
+export function jsNameToRustName(name:string, toSnakeCase: boolean) : string {
 	while (
 		name.length > 2 && (
 			(name.charCodeAt(0) == 34 && name.charCodeAt(name.length-1) == 34) ||
@@ -104,21 +104,91 @@ export function escapeRustName(name:string) : string {
 	) {
 		name = name.substr(1, name.length-2);
 	}
-	if (rustKeywords.hasOwnProperty(name)) {
-		name = name+"__";
-	}
+	// Converting camel case to snake case is actually kind of hard. There are names like encodeURIComponent(),
+	// which we want to translate to encode_uri_component(), not encode_u_r_i_component().
+	// The simple rule we'll do is:
+	// - If there is a group of 2+ capital letters in a row followed by a lowercase letter,
+	//   put exactly 1 underscore, before the last capital letter in the group.
+	// - If there is a group of 2+ capital letters in a row at the end of an identifier, use no underscores.
+	// This makes names like isAURIComponent() translate to is_auri_component rather than is_a_uri_component,
+	// but there's no way around that, but to be fair if you use a name like that you're asking for it.
+	//
+	// We also change "_", "-" and "." to "_". Every other unicode character becomes "uXXXX" (surrounded by underscores if needed),
+	// where XXXX is the character's hex code. Except $, that gets renamed to "dollar" (surrounded by underscores if needed).
 	let newName = "";
+	let lastWasCapital : boolean = false;
+	let needsUnderscore : boolean = false; // whether an underscore is needed before adding new characters
 	for (let i = 0; i < name.length; i++) {
 		let c = name.charCodeAt(i);
-		if ((c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57 && i > 0) || c == 95) {
-			newName += String.fromCharCode(c);
-		} else if (c == 45 || c == 46) {
+		let char = String.fromCharCode(c);
+		let isSmallLetter = (c >= 97 && c <= 122);
+		let isCapital = (c >= 65 && c <= 90);
+		let isNumber = (c >= 48 && c <= 57);
+		let isUnderscoreLike = (c == 45 || c == 46 || c == 95);
+		let lastCharWasUnderscore = (newName.charCodeAt(newName.length-1) == 95);
+
+		if (isCapital) {
+			if (toSnakeCase && i > 0) {
+				if (!lastWasCapital) {
+					needsUnderscore = true;
+				} else {
+					// look at the next char
+					if (i+1 < name.length) {
+						let nextChar = name.charCodeAt(i+1);
+						let nextIsLowercase = (nextChar >= 97 && nextChar <= 122);
+						if (nextIsLowercase) {
+							needsUnderscore = true;
+						}
+					}
+				}
+			}
+			if (needsUnderscore) {
+				newName += "_";
+			}
+			if (toSnakeCase) {
+				newName += String.fromCharCode(c+32);
+			} else {
+				newName += char;
+			}
+			needsUnderscore = false;
+		} else if (isNumber) {
+			if (needsUnderscore || i == 0) {
+				newName += "_"
+			}
+			newName += char;
+			needsUnderscore = false;
+		} else if (isSmallLetter) {
+			if (needsUnderscore) {
+				newName += "_";
+			}
+			newName += char;
+			needsUnderscore = false;
+		} else if (isUnderscoreLike) {
 			newName += "_";
+			needsUnderscore = false;
 		} else {
-			newName += "_Ux"+c.toString(16);
+			if (needsUnderscore || (i > 0 && !lastCharWasUnderscore)) {
+				newName += "_";
+			}
+			if (c == 36) {
+				newName += "dollar";
+			} else {
+				newName += "u"+c.toString(16);
+			}
+			needsUnderscore = true;
+		}
+
+		if (isCapital) {
+			lastWasCapital = true;
+		} else {
+			lastWasCapital = false;
 		}
 	}
-	return newName;
+	if (rustKeywords.hasOwnProperty(newName)) {
+		return newName+"_";
+	} else {
+		return newName;
+	}
 }
 
 export function constructString<R>(f: (addPart: (s: string) => void) => void) : string {

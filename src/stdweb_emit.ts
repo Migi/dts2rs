@@ -12,11 +12,11 @@ enum FunctionKind {
 }
 
 function getSubClassOfTraitName(theClass: data.ClassType) : string {
-	return util.escapeRustName("__SubClassOf_"+theClass.rustName);
+	return util.jsNameToRustName("__SubClassOf_"+theClass.rustName, false);
 }
 
 function getImplementsTraitName(theInterface: data.InterfaceType) : string {
-	return util.escapeRustName("__Implements_"+theInterface.rustName);
+	return util.jsNameToRustName("__Implements_"+theInterface.rustName, false);
 }
 
 function underscoreEscapeSignature(base: string, type: data.FunctionType) : string {

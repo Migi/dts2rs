@@ -289,15 +289,13 @@ export class ListOfFunctions {
 }
 
 export class ClassOrInterface {
-	constructor(public jsName: string, public namespace: Namespace, public docs: string) {
-		this.rustName = util.escapeRustName(this.jsName);
+	constructor(public jsName: string, public rustName: string, public namespace: Namespace, public docs: string) {
 		this.directImpls = [];
 		this.methods = new ListOfFunctions();
 		this.properties = [];
 		this.canBeUndefined = false;
 	}
 
-	rustName: string;
 	directImpls: InterfaceType[];
 	methods: ListOfFunctions;
 	properties: Variable[];
@@ -326,8 +324,8 @@ export class ClassOrInterface {
 }
 
 export class ClassType extends ClassOrInterface {
-	constructor(jsName: string, public namespace: Namespace, docs: string) {
-		super(jsName, namespace, docs);
+	constructor(jsName: string, rustName: string, public namespace: Namespace, docs: string) {
+		super(jsName, rustName, namespace, docs);
 		this.superClass = undefined;
 		this.kind = "class";
 		this.constructors = new ListOfFunctions();
@@ -371,8 +369,8 @@ export class ClassType extends ClassOrInterface {
 }
 
 export class InterfaceType extends ClassOrInterface {
-	constructor(jsName: string, public namespace: Namespace, docs: string) {
-		super(jsName, namespace, docs);
+	constructor(jsName: string, rustName: string, public namespace: Namespace, docs: string) {
+		super(jsName, rustName, namespace, docs);
 		this.kind = "interface";
 	}
 
@@ -476,20 +474,18 @@ export class NamedFunction {
 }
 
 export class Namespace {
-	constructor(public parent: Namespace | undefined, public jsName: string) {
+	constructor(public parent: Namespace | undefined, public jsName: string, public rustName: string) {
 		if (this.jsName === "" && this.parent !== undefined) {
 			console.error("Namespace without name found that isn't the root namespace!");
 			console.error("Parent: "+this.parent.toStringFull());
 			throw "terminating...";
 		}
-		this.rustName = util.escapeRustName(this.jsName);
 		this.subNamespaces = {};
 		this.classes = {};
 		this.interfaces = {};
 		this.staticFunctions = new ListOfFunctions();
 	}
 
-	rustName: string;
 	subNamespaces: {[name:string]: Namespace};
 	classes: {[name:string]: ClassType};
 	interfaces: {[name:string]: InterfaceType};
@@ -525,8 +521,7 @@ export class Namespace {
 		this.staticFunctions.add(f);
 	}
 
-	private getOrCreateItemOfType<T>(jsName: string, nameMap: {[name:string]: T}, creator: () => T) : T {
-		let rustName = util.escapeRustName(jsName);
+	private getOrCreateItemOfType<T>(jsName: string, rustName: string, nameMap: {[name:string]: T}, creator: () => T) : T {
 		if (nameMap.hasOwnProperty(rustName)) {
 			return nameMap[rustName];
 		} else {
@@ -536,16 +531,16 @@ export class Namespace {
 		}
 	}
 
-	getOrCreateSubNamespace(jsName: string) : Namespace {
-		return this.getOrCreateItemOfType(jsName, this.subNamespaces, () => new Namespace(this, jsName));
+	getOrCreateSubNamespace(jsName: string, rustName: string) : Namespace {
+		return this.getOrCreateItemOfType(jsName, rustName, this.subNamespaces, () => new Namespace(this, jsName, rustName));
 	}
 
-	getOrCreateClass(jsName: string, docs: string) : ClassType {
-		return this.getOrCreateItemOfType(jsName, this.classes, () => new ClassType(jsName, this, docs));
+	getOrCreateClass(jsName: string, rustName: string, docs: string) : ClassType {
+		return this.getOrCreateItemOfType(jsName, rustName, this.classes, () => new ClassType(jsName, rustName, this, docs));
 	}
 
-	getOrCreateInterface(jsName: string, docs: string) : InterfaceType {
-		return this.getOrCreateItemOfType(jsName, this.interfaces, () => new InterfaceType(jsName, this, docs));
+	getOrCreateInterface(jsName: string, rustName: string, docs: string) : InterfaceType {
+		return this.getOrCreateItemOfType(jsName, rustName, this.interfaces, () => new InterfaceType(jsName, rustName, this, docs));
 	}
 
 	getFullyQualifiedPath() : string {

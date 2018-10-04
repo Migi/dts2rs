@@ -46,13 +46,13 @@ function typeInReturnPos(type: data.Type, curNS: data.Namespace) : string {
 		case "any": return "::wasm_bindgen::JsValue";
 		case "unknown": return "::wasm_bindgen::JsValue";
 		case "number": return "f64";
-		case "string": return "::wasm_bindgen::JsString";
+		case "string": return "::js_sys::JsString";
 		case "bool": return "bool";
 		case "symbol": return "::js_sys::Symbol";
 		case "undefined": return "()"; // wasm_bindgen has no type representing undefined
 		case "null": return "()"; // wasm_bindgen has no type representing null
 		case "void": return "()";
-		case "never": return "()"; // change this when rust never types are stabilized
+		case "never": throw "ERROR: can't have a never type as a function argument!";
 		case "optional": {
 			if (type.subtype.canBeUndefined) {
 				return typeInReturnPos(type.subtype, curNS);
@@ -70,27 +70,31 @@ function typeInReturnPos(type: data.Type, curNS: data.Namespace) : string {
 	}
 }
 
-class WasmBindgenSpecifiers {
-	specifiers: string;
-
-	constructor() {
-		this.specifiers = "";
-	}
-
-	add(specifier: string) : WasmBindgenSpecifiers {
-		if (this.specifiers != "") {
-			this.specifiers = this.specifiers + ", " + specifier;
-		} else {
-			this.specifiers = specifier;
+function argToRefJsValue(type: data.Type, value: string, curNS: data.Namespace) : string {
+	switch (type.kind) {
+		case "any": return value;
+		case "unknown": return value;
+		case "number": return "&::wasm_bindgen::JsValue::from_f64("+value+")";
+		case "string": return "&"+value+".into()";
+		case "bool": return "&::wasm_bindgen::JsValue::from_bool("+value+")";
+		case "symbol": return "&"+value+".into()";
+		case "undefined": return "&::wasm_bindgen::JsValue::undefined()";
+		case "null": return "&::wasm_bindgen::JsValue::null()";
+		case "void": throw "ERROR: can't construct a void!";
+		case "never": throw "ERROR: can't construct a never!";
+		case "optional": {
+			if (type.subtype.canBeUndefined) {
+				return argToRefJsValue(type.subtype, value, curNS);
+			} else {
+				return "(match "+value+" { Ok(val) => { "+argToRefJsValue(type.subtype, "val", curNS)+" }, Err(_) => ::wasm_bindgen::JsValue::undefined())";
+			}
 		}
-		return this;
-	}
-
-	emit(cg: codegen.CodeGen) : void {
-		if (this.specifiers != "") {
-			cg.writeln("#[wasm_bindgen("+this.specifiers+")]");
-		} else {
-			cg.writeln("#[wasm_bindgen]");
+		case "class": return "&"+value+".into()";
+		case "interface": return "&"+value+".into()";
+		case "function": return "&"+value+".into()";
+		default: {
+			let exhaustive : never = type;
+			return exhaustive;
 		}
 	}
 }
@@ -132,10 +136,10 @@ function emitClass(cg: codegen.CodeGen, theClass: data.ClassType) : void {
 				addSpecifier("js_name = "+theClass.jsName);
 			}
 			theClass.forEachSuperClass((c) => {
-				addSpecifier("extends = \""+theClass.namespace.getRustPathTo(c.namespace, c.rustName)+"\"");
+				addSpecifier("extends = "+theClass.namespace.getRustPathTo(c.namespace, c.rustName));
 			});
 			theClass.forEachSuperImpl((i) => {
-				addSpecifier("extends = \""+theClass.namespace.getRustPathTo(i.namespace, i.rustName)+"\"");
+				addSpecifier("extends = "+theClass.namespace.getRustPathTo(i.namespace, i.rustName));
 			});
 		});
 		cg.writeln("pub type "+theClass.rustName+";");
@@ -200,7 +204,7 @@ function emitClass(cg: codegen.CodeGen, theClass: data.ClassType) : void {
 			cg.writeln("type Target = "+theClass.namespace.getRustPathTo(theClass.superClass.namespace, theClass.superClass.rustName)+";");
 			cg.writeln();
 			cg.scope("fn deref(&self) -> &Self::Target {", (cg) => {
-				cg.writeln("JsCast::unchecked_from_js_ref(self.as_ref())");
+				cg.writeln("::wasm_bindgen::JsCast::unchecked_from_js_ref(self.as_ref())");
 			});
 		}
 	});
@@ -213,7 +217,7 @@ function emitInterface(cg: codegen.CodeGen, theInterface: data.InterfaceType) : 
 		emitDocs(cg, theInterface.docs);
 		emitSpecifiers(cg, (addSpecifier) => {
 			theInterface.forEachSuperImpl((i) => {
-				addSpecifier("extends = \""+theInterface.namespace.getRustPathTo(i.namespace, i.rustName)+"\"");
+				addSpecifier("extends = "+theInterface.namespace.getRustPathTo(i.namespace, i.rustName));
 			});
 		});
 		cg.writeln("pub type "+theInterface.rustName+";");
@@ -273,7 +277,7 @@ function emitInterface(cg: codegen.CodeGen, theInterface: data.InterfaceType) : 
 				cg.writeln("type Target = "+theInterface.namespace.getRustPathTo(theSuperInterface.namespace, theSuperInterface.rustName)+";");
 				cg.writeln();
 				cg.scope("fn deref(&self) -> &Self::Target {", (cg) => {
-					cg.writeln("JsCast::unchecked_from_js_ref(self.as_ref())");
+					cg.writeln("::wasm_bindgen::JsCast::unchecked_from_js_ref(self.as_ref())");
 				});
 			}
 		});
@@ -301,20 +305,19 @@ function emitInterface(cg: codegen.CodeGen, theInterface: data.InterfaceType) : 
 
 	cg.scope("impl "+theInterface.rustName+" {", (cg) => {
 		cg.scope("pub fn new("+util.constructCommaSeparatedString((addStrPart) => {
-			addStrPart("&self");
 			allProps.forEach((prop) => {
 				if (!prop.isOptional) {
 					addStrPart(prop.rustName+": "+typeInArgPos(prop.type, theInterface.namespace));
 				}
 			});
 		})+") -> "+theInterface.rustName+" {", (cg) => {
-			cg.writeln("let obj = ::js_sys::Object::new();");
+			cg.writeln("let obj : ::wasm_bindgen::JsValue = ::js_sys::Object::new().into();");
 			allProps.forEach((prop) => {
 				if (!prop.isOptional) {
-					cg.writeln("::js_sys::Reflect::set(&obj, &\""+prop.jsName+"\".into(), &"+prop.rustName+");")
+					cg.writeln("::js_sys::Reflect::set(&obj, &\""+prop.jsName+"\".into(), "+argToRefJsValue(prop.type, prop.rustName, theInterface.namespace)+").unwrap();")
 				}
 			});
-			cg.writeln("::JsCast::unchecked_from_js(obj)");
+			cg.writeln("::wasm_bindgen::JsCast::unchecked_from_js(obj)");
 		});
 	});
 }
@@ -370,13 +373,13 @@ function emitFunction(cg: codegen.CodeGen, resolvedFunction: data.NameResolvedFu
 			addSpecifier("structural");
 		});
 		cg.writeln("pub fn "+resolvedFunction.resolvedName+"("+util.constructCommaSeparatedString((addStrPart) => {
-			if (belongsToType !== undefined) {
+			if (belongsToType !== undefined && kind == FunctionKind.METHOD) {
 				addStrPart("this: "+typeInArgPos(belongsToType, namespace));
 			}
 			theFunction.signature.args.forEach((arg) => {
 				addStrPart(arg.rustName + ": " + typeInArgPos(arg.type, namespace));
 			});
-		}) + ") -> " + typeInReturnPos(theFunction.signature.returnType, namespace)+";");
+		}) + ")" + (data.typesAreSame(theFunction.signature.returnType, data.Unit) ? "" : " -> " + typeInReturnPos(theFunction.signature.returnType, namespace))+";");
 		cg.writeln();
 	}
 }
@@ -422,12 +425,16 @@ export function emitCargoToml(packageName: string) : string {
 	"version = \"1.0.0\"\n" +
 	"authors = [\"dts2rs\"]\n" +
 	"\n" + 
-	"[lib]\n" + 
-	"crate-type = [\"cdylib\"]\n" +
+	//"[lib]\n" + 
+	//"crate-type = [\"staticlib\"]\n" +
+	//"\n" + 
+	"[dependencies.js-sys]\n" +
+	"version = \"*\"\n" +
+	"git = \"https://github.com/rustwasm/wasm-bindgen.git\"\n" +
 	"\n" + 
-	"[dependencies]\n" +
-	"wasm-bindgen = \"0.2.23\"\n" +
-	"js-sys = \"0.3.0\"\n";
+	"[dependencies.wasm-bindgen]\n" +
+	"version = \"*\"\n" +
+	"git = \"https://github.com/rustwasm/wasm-bindgen.git\"\n";
 }
 
 export function emitLibRs(cg: codegen.CodeGen, program: data.Program) {
@@ -437,6 +444,7 @@ export function emitLibRs(cg: codegen.CodeGen, program: data.Program) {
 	cg.writeln("#![allow(non_camel_case_types, non_snake_case)]");
 	cg.writeln();
 	cg.writeln("extern crate wasm_bindgen;");
+	cg.writeln("extern crate js_sys;");
 	cg.writeln();
 	cg.writeln("use wasm_bindgen::prelude::*;");
 	cg.writeln();

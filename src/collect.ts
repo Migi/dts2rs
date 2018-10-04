@@ -138,7 +138,7 @@ class Collector {
 	constructor(public sourceFiles: string[], public checker: ts.TypeChecker, public existingTypeFqnMap : {[key:string]: data.Type}) {
 		this.collectedTypes = new Map<ts.Type, data.Type>();
 		this.collectedSymbols = new Map<ts.Symbol, data.Type>();
-		this.rootNamespace = new data.Namespace(undefined, "");
+		this.rootNamespace = new data.Namespace(undefined, "", "");
 		this.closures = [];
 	}
 
@@ -257,13 +257,18 @@ class Collector {
 		return makeTypeFromOnlyFlags(type);
 	}
 
-	collectSymbolEnclosingNamespaces(symbol:ts.Symbol) : [data.Namespace,string] {
-		let parsedFqn = parseFQN(this.checker.getFullyQualifiedName(symbol));
+	// reads the symbol's fully qualified name,
+	// collects all enclosing namespaces and returns [namspace, rustName]
+	processSymbolFQN(symbol:ts.Symbol, toSnakeCase: boolean) : [data.Namespace,string] {
+		let fqn = this.checker.getFullyQualifiedName(symbol);
+		let split = fqn.split(".");
 		let curNS = this.rootNamespace;
-		for (let i = 0; i < parsedFqn.length-1; i++) {
-			curNS = curNS.getOrCreateSubNamespace(parsedFqn[i]);
+		for (let i = 0; i < split.length-1; i++) {
+			let rustName = util.jsNameToRustName(split[i], true);
+			curNS = curNS.getOrCreateSubNamespace(split[i], rustName);
 		}
-		return [curNS, parsedFqn[parsedFqn.length-1]];
+		let rustName = util.jsNameToRustName(split[split.length-1], toSnakeCase);
+		return [curNS, rustName];
 	}
 
 	collectSignature(signature: ts.Signature) : data.FunctionType {
@@ -288,7 +293,7 @@ class Collector {
 				rustType = new data.Optional(rustType);
 			}
 			if (!hasDotDotDot) {
-				args.push(new data.Variable(param.name, this.checker.typeToString(type), util.escapeRustName(param.name), rustType, isOptional));
+				args.push(new data.Variable(param.name, this.checker.typeToString(type), util.jsNameToRustName(param.name, true), rustType, isOptional));
 			}
 		});
 		return new data.FunctionType(args, retType, this.checker.typeToString(signature.getReturnType()));
@@ -306,7 +311,7 @@ class Collector {
 	}
 
 	collectFunction(symbol:ts.Symbol, type:ts.Type) : data.Type {
-		let [ns, name] = this.collectSymbolEnclosingNamespaces(symbol);
+		let [ns, rustName] = this.processSymbolFQN(symbol, true);
 
 		let docs = this.getSymbolDocs(symbol);
 
@@ -315,7 +320,7 @@ class Collector {
 		util.forEach(symbol.declarations, (decl) => {
 			let functionType = this.checker.getTypeOfSymbolAtLocation(symbol, decl);
 			util.forEach(functionType.getCallSignatures(), (callSig) => {
-				let f = new data.NamedFunction(util.escapeRustName(symbol.name), symbol.name, this.collectSignature(callSig), docs);
+				let f = new data.NamedFunction(rustName, symbol.name, this.collectSignature(callSig), docs);
 				ns.addStaticFunction(f);
 				result.push(f);
 			});
@@ -342,7 +347,7 @@ class Collector {
 				let memType = this.checker.getTypeOfSymbolAtLocation(memSym, memSym.valueDeclaration!);
 				memType.getCallSignatures().forEach((callSig) => {
 					obj.addMethod(new data.NamedFunction(
-						util.escapeRustName(memSym.name),
+						util.jsNameToRustName(memSym.name, true),
 						memSym.name,
 						this.collectSignature(callSig),
 						this.getSignatureDocs(callSig)
@@ -354,7 +359,7 @@ class Collector {
 					if (isOptional) {
 						memRustType = new data.Optional(memRustType);
 					}
-					obj.properties.push(new data.Variable(memSym.name, this.checker.typeToString(memType), util.escapeRustName(memSym.name), memRustType, isOptional));
+					obj.properties.push(new data.Variable(memSym.name, this.checker.typeToString(memType), util.jsNameToRustName(memSym.name, true), memRustType, isOptional));
 				}
 			}
 		});
@@ -363,13 +368,13 @@ class Collector {
 	collectClass(symbol:ts.Symbol, type:ts.InterfaceType) : data.ClassType {
 		console.assert(type.isClass());
 
-		let [ns, name] = this.collectSymbolEnclosingNamespaces(symbol);
+		let [ns, rustName] = this.processSymbolFQN(symbol, false);
 
-		if (ns.classes.hasOwnProperty(name)) {
-			return ns.classes[name];
+		if (ns.classes.hasOwnProperty(rustName)) {
+			return ns.classes[rustName];
 		}
 
-		let result = ns.getOrCreateClass(symbol.name, this.getSymbolDocs(symbol));
+		let result = ns.getOrCreateClass(symbol.name, rustName, this.getSymbolDocs(symbol));
 
 		let bases = this.checker.getBaseTypes(type);
 		bases.forEach((base) => {
@@ -404,7 +409,7 @@ class Collector {
 							let memType = this.checker.getTypeAtLocation(mem);
 							if (memType.symbol) {
 								let memName = memType.symbol.name;
-								let memRustName = util.escapeRustName(memName);
+								let memRustName = util.jsNameToRustName(memName, true);
 								util.forEach(memType.getCallSignatures(), (callSig) => {
 									let sig = this.collectSignature(callSig);
 									result.addStaticMethod(new data.NamedFunction(memRustName, memName, sig, this.getSignatureDocs(callSig)));
@@ -444,13 +449,13 @@ class Collector {
 	}
 
 	collectInterface(symbol:ts.Symbol, type:ts.InterfaceType) : data.InterfaceType {
-		let [ns, name] = this.collectSymbolEnclosingNamespaces(symbol);
+		let [ns, rustName] = this.processSymbolFQN(symbol, false);
 
-		if (ns.interfaces.hasOwnProperty(name)) {
-			return ns.interfaces[name];
+		if (ns.interfaces.hasOwnProperty(rustName)) {
+			return ns.interfaces[rustName];
 		}
 
-		let result = ns.getOrCreateInterface(symbol.name, this.getSymbolDocs(symbol));
+		let result = ns.getOrCreateInterface(symbol.name, rustName, this.getSymbolDocs(symbol));
 
 		let bases = this.checker.getBaseTypes(type);
 		bases.forEach((base) => {
@@ -467,14 +472,4 @@ class Collector {
 
 		return result;
 	}
-}
-
-function parseFQN(fqn:string) : string[] {
-	return fqn.split(".").map((part) => {
-		if (part.charCodeAt(0) == 34 /* " */ && part.charCodeAt(part.length-1) == 34 /* " */) {
-			return part.substr(1, part.length-2);
-		} else {
-			return part;
-		}
-	}).map(util.escapeRustName);
 }
