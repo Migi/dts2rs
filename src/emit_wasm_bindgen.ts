@@ -358,6 +358,7 @@ function emitFunction(cg: codegen.CodeGen, resolvedFunction: data.NameResolvedFu
 		emitSpecifiers(cg, (addSpecifier) => {
 			if (kind == FunctionKind.METHOD) {
 				addSpecifier("method");
+				addSpecifier("structural");
 			} else if (kind == FunctionKind.CONSTRUCTOR) {
 				addSpecifier("constructor");
 			} else if (kind == FunctionKind.FREE_FUNCTION) {
@@ -370,7 +371,6 @@ function emitFunction(cg: codegen.CodeGen, resolvedFunction: data.NameResolvedFu
 			if (resolvedFunction.resolvedName != resolvedFunction.f.jsName) {
 				addSpecifier("js_name = "+resolvedFunction.f.jsName);
 			}
-			addSpecifier("structural");
 		});
 		cg.writeln("pub fn "+resolvedFunction.resolvedName+"("+util.constructCommaSeparatedString((addStrPart) => {
 			if (belongsToType !== undefined && kind == FunctionKind.METHOD) {

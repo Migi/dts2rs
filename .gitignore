@@ -68,3 +68,6 @@ test/pixi.js/output2/
 test/pixitest2/target/.rustc_info.json
 test/pixitest2/target/
 test/pixitest2/Cargo.lock
+test/pixitest2/pkg/pixitest_bg.wasm
+test/pixitest2/pkg/pixitest.js
+test/pixitest2/pkg/pixitest.d.ts
